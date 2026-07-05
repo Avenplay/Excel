@@ -386,31 +386,31 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
             
             with c_btn1:
                 if st.button(f"🍽️ Consumir 1 ud", key=f"con_{id_prod}"):
-                    # Abrimos, actualizamos, guardamos y CERRAMOS antes de hacer nada más
+                    # 1. ACTUALIZAR BASE DE DATOS Y CERRAR CONEXIÓN (Previene Database Locked)
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Consumido')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
                     conexion.commit()
                     conexion.close()
                     
-                    # Llamadas a funciones externas con la DB libre de bloqueos
+                    # 2. EJECUTAR LÓGICA DE LISTA DE COMPRA CON LA BASE DE DATOS LIBRE
                     if cant - 1 == 0: 
-                        mejor_super = obtener_mejor_super(nombre)
+                        mejor_super = obtener_mejor_super(nombre, tabla="despensa")
                         añadir_a_lista_compra(nombre.lower(), mejor_super)
                     st.rerun()
                     
             with c_btn2:
                 if st.button(f"🗑️ Tirar / Merma", key=f"tir_{id_prod}"):
-                    # Abrimos, actualizamos, guardamos y CERRAMOS antes de hacer nada más
+                    # 1. ACTUALIZAR BASE DE DATOS Y CERRAR CONEXIÓN (Previene Database Locked)
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Tirado')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
                     conexion.commit()
                     conexion.close()
                     
-                    # Llamadas a funciones externas con la DB libre de bloqueos
+                    # 2. EJECUTAR LÓGICA DE LISTA DE COMPRA CON LA BASE DE DATOS LIBRE
                     if cant - 1 == 0: 
-                        mejor_super = obtener_mejor_super(nombre)
+                        mejor_super = obtener_mejor_super(nombre, tabla="despensa")
                         añadir_a_lista_compra(nombre.lower(), mejor_super)
                     st.rerun()
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
