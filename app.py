@@ -75,6 +75,14 @@ def inicializar_base_datos():
         monto_total REAL NOT NULL, meses_totales INTEGER NOT NULL, meses_pagados INTEGER NOT NULL DEFAULT 0
     )""")
     
+    # --- PARCHE DE MIGRACIÓN PARA UTENSILIOS ---
+    # Comprobamos si la tabla antigua está bloqueando la nueva
+    try:
+        cursor.execute("SELECT precio_unitario FROM utensilios LIMIT 1")
+    except sqlite3.OperationalError:
+        # Si salta el error, la tabla es la vieja. La decapitamos.
+        cursor.execute("DROP TABLE IF EXISTS utensilios")
+        
     # NUEVA ESTRUCTURA: Clónica a la despensa para auditar valor
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS utensilios (
