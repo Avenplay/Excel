@@ -100,7 +100,6 @@ def inicializar_base_datos():
     )""")
     cursor.execute("INSERT OR IGNORE INTO configuracion_coche (id, letra_mensual, seguro_mensual) VALUES (1, 0.0, 0.0)")
 
-    # NUEVA TABLA: PREVISIONES ANUALES
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS previsiones_anuales (
         id INTEGER PRIMARY KEY AUTOINCREMENT, concepto TEXT NOT NULL UNIQUE,
@@ -161,7 +160,6 @@ def obtener_totales_sistema():
     cursor.execute("SELECT monto_total, meses_totales FROM compras_plazos WHERE meses_pagados < meses_totales")
     total_cuotas_plazos = sum(row[0] / row[1] for row in cursor.fetchall())
     
-    # CÁLCULO DE PROVISIONES (Fondos de Amortización Mensual)
     cursor.execute("SELECT SUM(monto_total / 12.0) FROM previsiones_anuales")
     total_provisiones_mes = cursor.fetchone()[0] or 0.0
 
@@ -210,6 +208,7 @@ opcion_menu = st.sidebar.radio("Ir a:", [
     "🗓️ Previsiones Anuales", 
     "🔮 Previsiones y Proyectos", 
     "🚗 Mi Coche",
+    "📊 Análisis y Resumen Anual",
     "📷 Lector de Tickets IA",
     "⚙️ Configuración y Arranque"
 ])
@@ -224,7 +223,6 @@ if opcion_menu == "💵 Control de Caja":
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1: st.metric(label="💳 Bolsa Única", value=f"{saldo_banco:,.2f} €")
     with col2: st.metric(label="💵 Hucha Efectivo", value=f"{saldo_efectivo:,.2f} €")
-    # Este es el nuevo indicador de provisiones que pediste
     with col3: st.metric(label="🛡️ Colchón Provisiones", value=f"{total_provisiones_mes:,.2f} €", help="Dinero de tu Bolsa Única que NO debes tocar este mes para poder pagar seguros/IBI a futuro.")
     with col4: st.metric(label="📦 Stock Comida", value=f"{inmovilizado_comida:,.2f} €")
     with col5: st.metric(label="🧴 Stock Hogar", value=f"{inmovilizado_hogar:,.2f} €")
@@ -618,7 +616,6 @@ elif opcion_menu == "💳 Compras a Plazos":
                 conexion.close()
                 st.rerun()
 
-# --- NUEVA PESTAÑA: PREVISIONES ANUALES ---
 elif opcion_menu == "🗓️ Previsiones Anuales":
     st.title("🗓️ Gestor de Provisiones (Sinking Funds)")
     st.info("💡 Crea 'huchas virtuales' para pagos grandes (Seguro, IBI, Taller). El sistema dividirá el coste entre 12 y apartará esa cuota cada mes para que el pago no te pille por sorpresa.")
@@ -685,12 +682,30 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     st.title("🔮 Consultor de Viabilidad")
     st.caption("Esta herramienta te dice cuánto dinero libre tienes realmente, tras apartar todo lo necesario para vivir, pagar tus deudas y tus seguros futuros.")
     
+    # --- MOTOR DE CÁLCULO DE MEDIA MÓVIL (SUPERMERCADO Y HOGAR) ---
+    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    df_supermercado = pd.read_sql_query("""
+        SELECT fecha, monto FROM movimientos_caja 
+        WHERE tipo_ingreso_gasto IN ('Alimentación', 'Hogar') 
+           OR concepto LIKE 'Alimento:%' 
+           OR concepto LIKE 'Bazar/Utensilio:%'
+    """, conexion)
+    conexion.close()
+    
+    if not df_supermercado.empty:
+        df_supermercado['mes_año'] = df_supermercado['fecha'].str[:7]
+        meses_registrados = df_supermercado['mes_año'].nunique()
+        gasto_total_historico = df_supermercado['monto'].sum()
+        media_supermercado = gasto_total_historico / meses_registrados if meses_registrados > 0 else 0.0
+    else:
+        media_supermercado = 0.0
+
     col_p1, col_p2 = st.columns(2)
     with col_p1: sueldo_base = st.number_input("Nómina Fija Mensual (€)", min_value=0.0, value=1300.0)
     with col_p2: gastos_fijos_est = st.number_input("Suministros (Agua, Luz, Internet, etc)", min_value=0.0, value=150.0)
         
-    # LA MATEMÁTICA DEFINITIVA DEL AHORRO LIBRE
-    capacidad_ahorroador_teorica = sueldo_base - gastos_fijos_est - total_recurrentes - total_cuotas_plazos - total_provisiones_mes
+    # LA MATEMÁTICA DEFINITIVA DEL AHORRO LIBRE (Ahora incluye la media móvil)
+    capacidad_ahorroador_teorica = sueldo_base - gastos_fijos_est - total_recurrentes - total_cuotas_plazos - total_provisiones_mes - media_supermercado
     
     st.success(f"### 💰 AHORRO LIBRE REAL: {capacidad_ahorroador_teorica:,.2f} € / mes")
     
@@ -700,6 +715,7 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     st.markdown(f"➖ Recurrentes (Suscripciones/Letras): `{total_recurrentes:,.2f} €`")
     st.markdown(f"➖ Cuotas de Plazos: `{total_cuotas_plazos:,.2f} €`")
     st.markdown(f"➖ Provisiones (Colchón para Seguros/Taller): `{total_provisiones_mes:,.2f} €`")
+    st.markdown(f"➖ Media Supermercado (Comida/Hogar): `{media_supermercado:,.2f} €`")
     st.markdown("---")
     
     with st.form("form_proyecto"):
@@ -759,7 +775,6 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
 elif opcion_menu == "🚗 Mi Coche":
     st.title("🚗 Dashboard del Vehículo")
     
-    # Lectura de la configuración fija del coche (sin incluir el seguro, que ahora va en Previsiones)
     conexion = sqlite3.connect(DB_PATH, timeout=10)
     config_coche = pd.read_sql_query("SELECT letra_mensual FROM configuracion_coche WHERE id=1", conexion)
     letra_val = config_coche.iloc[0]['letra_mensual'] if not config_coche.empty else 0.0
@@ -827,6 +842,72 @@ elif opcion_menu == "🚗 Mi Coche":
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else:
         st.info("No has registrado gasolina ni limpiezas este mes.")
+
+# --- NUEVA PESTAÑA: ANÁLISIS Y RESUMEN ANUAL ---
+elif opcion_menu == "📊 Análisis y Resumen Anual":
+    st.title("📊 Análisis Financiero y Resumen Anual")
+    st.info("Visualiza la evolución de tus ingresos y gastos a lo largo del tiempo. (Los 'Saldos Iniciales' están excluidos para no distorsionar las métricas reales).")
+    
+    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    df_movs = pd.read_sql_query("SELECT * FROM movimientos_caja", conexion)
+    conexion.close()
+    
+    if df_movs.empty:
+        st.warning("Aún no hay suficientes datos para mostrar analíticas.")
+    else:
+        # Excluir ingresos fantasma
+        df_movs = df_movs[~df_movs['concepto'].str.startswith('Saldo Inicial:')]
+        
+        if df_movs.empty:
+            st.warning("Solo tienes Saldos Iniciales registrados. Empieza a registrar gastos diarios para ver las gráficas.")
+        else:
+            df_movs['mes'] = df_movs['fecha'].str[:7] # Formato YYYY-MM
+            
+            # Clasificación inteligente de categorías
+            def clasificar_gasto(row):
+                tipo = row['tipo_ingreso_gasto']
+                concepto = row['concepto']
+                if tipo in ['Ingreso Fijo', 'Ingreso Extra']:
+                    return 'Ingresos'
+                elif tipo in ['Alimentación', 'Hogar'] or concepto.startswith('Alimento:') or concepto.startswith('Bazar/'):
+                    return 'Supermercado (Comida/Hogar)'
+                elif tipo == 'Gasto Coche' or concepto.startswith('Pago Previsión: Seguro'):
+                    return 'Coche y Transporte'
+                elif concepto.startswith('Fijo Automático:') or concepto.startswith('Cuota Plazo:') or concepto.startswith('Pago Previsión:'):
+                    return 'Gastos Fijos y Provisiones'
+                elif tipo == 'Gasto Excepcional':
+                    return 'Excepcionales / Ocio'
+                else:
+                    return 'Otros Gastos'
+            
+            df_movs['categoria_informe'] = df_movs.apply(clasificar_gasto, axis=1)
+            
+            df_gastos = df_movs[df_movs['categoria_informe'] != 'Ingresos']
+            df_ingresos = df_movs[df_movs['categoria_informe'] == 'Ingresos']
+            
+            st.subheader("📉 Evolución de Gastos Mensuales por Categoría")
+            if not df_gastos.empty:
+                pivot_gastos = df_gastos.pivot_table(index='mes', columns='categoria_informe', values='monto', aggfunc='sum', fill_value=0)
+                st.bar_chart(pivot_gastos)
+                
+                st.subheader("📅 Tabla Contable Detallada")
+                pivot_display = pivot_gastos.copy()
+                pivot_display['TOTAL MES'] = pivot_display.sum(axis=1)
+                st.dataframe(pivot_display.style.format("{:.2f} €"), use_container_width=True)
+            else:
+                st.info("No hay gastos registrados para analizar.")
+            
+            st.markdown("---")
+            st.subheader("🏆 Acumulados Históricos (Desde el inicio de la App)")
+            col1, col2 = st.columns(2)
+            with col1:
+                total_gastado = df_gastos['monto'].sum() if not df_gastos.empty else 0.0
+                st.metric("Total Dinero Gastado", f"{total_gastado:,.2f} €")
+                if not df_gastos.empty:
+                    st.write(df_gastos.groupby('categoria_informe')['monto'].sum().sort_values(ascending=False).map("{:,.2f} €".format))
+            with col2:
+                total_ingresado = df_ingresos['monto'].sum() if not df_ingresos.empty else 0.0
+                st.metric("Total Dinero Ingresado", f"{total_ingresado:,.2f} €")
 
 elif opcion_menu == "📷 Lector de Tickets IA":
     st.title("📷 Escáner de Tickets Inteligente")
