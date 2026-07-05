@@ -75,15 +75,12 @@ def inicializar_base_datos():
         monto_total REAL NOT NULL, meses_totales INTEGER NOT NULL, meses_pagados INTEGER NOT NULL DEFAULT 0
     )""")
     
-    # --- PARCHE DE MIGRACIÓN PARA UTENSILIOS ---
-    # Comprobamos si la tabla antigua está bloqueando la nueva
+    # Parche de migración para utensilios (Hogar)
     try:
         cursor.execute("SELECT precio_unitario FROM utensilios LIMIT 1")
     except sqlite3.OperationalError:
-        # Si salta el error, la tabla es la vieja. La decapitamos.
         cursor.execute("DROP TABLE IF EXISTS utensilios")
         
-    # NUEVA ESTRUCTURA: Clónica a la despensa para auditar valor
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS utensilios (
         id INTEGER PRIMARY KEY AUTOINCREMENT, producto_generico TEXT NOT NULL, supermercado TEXT NOT NULL,
@@ -143,7 +140,6 @@ def obtener_totales_sistema():
     mermas_comida = pd.read_sql_query("SELECT SUM(coste_estimado) FROM consumo_alimentos WHERE estado='Tirado'", conexion).iloc[0,0] or 0.0
     total_recurrentes = pd.read_sql_query("SELECT SUM(monto) FROM gastos_recurrentes", conexion).iloc[0,0] or 0.0
     
-    # NUEVOS CÁLCULOS: Valor inmovilizado en inventarios
     inmovilizado_comida = pd.read_sql_query("SELECT SUM(unidades_actuales * precio_unitario) FROM despensa", conexion).iloc[0,0] or 0.0
     inmovilizado_hogar = pd.read_sql_query("SELECT SUM(unidades_actuales * precio_unitario) FROM utensilios", conexion).iloc[0,0] or 0.0
 
@@ -170,10 +166,7 @@ def registrar_movimiento(concepto, monto, tipo, metodo, subcuenta='N/A'):
 def obtener_mejor_super(producto_nombre, tabla="despensa"):
     conexion = sqlite3.connect(DB_PATH, timeout=10)
     fecha_limite = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
-    
-    # Inyectamos el nombre de la tabla de forma dinámica
     q = f"SELECT supermercado FROM {tabla} WHERE producto_generico = ? AND fecha_compra >= ? GROUP BY supermercado ORDER BY AVG(precio_unitario/peso_neto_kg) ASC LIMIT 1"
-    
     res = conexion.execute(q, (producto_nombre.lower().strip(), fecha_limite)).fetchone()
     conexion.close()
     return res[0] if res else "Cualquiera"
@@ -197,7 +190,7 @@ opcion_menu = st.sidebar.radio("Ir a:", [
     "💳 Compras a Plazos", 
     "🔮 Previsiones y Proyectos", 
     "📷 Lector de Tickets IA",
-    "⚙️ Configuración y Arranque"  # <--- NUEVA PESTAÑA AÑADIDA
+    "⚙️ Configuración y Arranque"
 ])
 
 # ==========================================
@@ -207,7 +200,6 @@ if opcion_menu == "💵 Control de Caja":
     st.title("🧠 Tu Copiloto Financiero Inteligente")
     st.markdown("---")
     
-    # Añadimos las métricas de Inmovilizado para ver cuánto dinero hay convertido en bienes
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1: st.metric(label="💳 Bolsa Única", value=f"{saldo_banco:,.2f} €")
     with col2: st.metric(label="💵 Hucha Efectivo", value=f"{saldo_efectivo:,.2f} €")
@@ -220,10 +212,8 @@ if opcion_menu == "💵 Control de Caja":
     
     with col_l:
         st.header("🛒 Registrar Gasto Manual")
-        # El selector FUERA del form para que reaccione instantáneamente
         categoria_gasto = st.selectbox("Categoría del Gasto", ["Alimentación", "Hogar", "Gastos Fijos", "Gasto Excepcional"])
         
-        # FLUJO 1: COMPRAS QUE GENERAN INVENTARIO (Comida o Hogar)
         if categoria_gasto in ["Alimentación", "Hogar"]:
             with st.form("form_gasto_inventario"):
                 st.caption("Al guardar, el importe se restará del banco y los artículos irán a su despensa correspondiente.")
@@ -246,11 +236,9 @@ if opcion_menu == "💵 Control de Caja":
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     cursor = conexion.cursor()
                     
-                    # Asiento 1: Restar el dinero del libro mayor
                     cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, ?, ?)", 
                                    (fecha_actual, f"{categoria_gasto}: {concepto_g}", monto_g, "Gasto Habitual", metodo_g))
                     
-                    # Asiento 2: Inyectar en el inventario
                     cursor.execute(f"INSERT INTO {tabla_destino} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)", 
                                    (concepto_g.lower().strip(), super_g, unidades_g, peso_g, precio_uni, fecha_actual))
                     
@@ -258,7 +246,6 @@ if opcion_menu == "💵 Control de Caja":
                     conexion.close()
                     st.rerun()
 
-        # FLUJO 2: GASTOS FIJOS (Suscripciones, recibos)
         elif categoria_gasto == "Gastos Fijos":
             with st.form("form_gasto_fijo"):
                 st.caption("Al guardar, se cobrará hoy y se añadirá a la pestaña 'Gastos Recurrentes' para el futuro.")
@@ -280,7 +267,6 @@ if opcion_menu == "💵 Control de Caja":
                     finally:
                         conexion.close()
 
-        # FLUJO 3: GASTOS EXCEPCIONALES (Ocio, imprevistos)
         else:
             with st.form("form_gasto_excepcional"):
                 concepto_g = st.text_input("Concepto (Ej. Taller, Cena)")
@@ -291,7 +277,6 @@ if opcion_menu == "💵 Control de Caja":
                     registrar_movimiento(concepto_g, monto_g, "Gasto Excepcional", metodo_g)
                     st.rerun()
 
-    # --- LA COLUMNA DERECHA Y EL HISTORIAL SE MANTIENEN INTACTOS ---            
     with col_r:
         st.header("💰 Registrar Entrada de Dinero")
         with st.form("form_ingreso"):
@@ -328,22 +313,19 @@ if opcion_menu == "💵 Control de Caja":
                 elif pago == 'Efectivo': running_hucha -= monto
             saldos_registro[m_id] = (running_banco, running_hucha)
             
-for index, fila in df_movimientos.iterrows():
+        for index, fila in df_movimientos.iterrows():
             m_id, m_fecha, m_concepto, m_monto, m_tipo, m_pago, m_sub = fila['id'], fila['fecha'], fila['concepto'], fila['monto'], fila['tipo_ingreso_gasto'], fila['metodo_pago'], fila['subcuenta_extra']
             
-            # --- NUEVAS LÍNEAS PARA OCULTAR SALDOS INICIALES ---
+            # Ocultamos los ingresos fantasma del saldo inicial
             if m_concepto.startswith("Saldo Inicial:"):
-                continue 
-            # ---------------------------------------------------
-
+                continue
+                
             bal_banco, bal_hucha = saldos_registro.get(m_id, (0.0, 0.0))
-            
             txt_balance = f"💵 Balance Hucha: **{bal_hucha:,.2f} €**" if (m_pago == 'Efectivo' or m_sub == 'Extra-Efectivo') else f"🏦 Balance Banco: **{bal_banco:,.2f} €**"
             
             c_detalles, c_eliminar = st.columns([8, 2])
             with c_detalles: 
                 st.write(f"📅 **{m_fecha}** | `{m_tipo}` | **{m_concepto}** -> **{m_monto:,.2f} €** ({m_pago}) | {txt_balance}")
-# ... (código anterior de borrar movimientos) ...
             with c_eliminar:
                 if st.button("🗑️ Borrar", key=f"del_mov_{m_id}"):
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
@@ -353,12 +335,10 @@ for index, fila in df_movimientos.iterrows():
                     st.rerun()
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
 
-# ELIF DEBE ESTAR PEGADO AL MARGEN IZQUIERDO (0 ESPACIOS)
 elif opcion_menu == "🍏 Despensa (Alimentos)":
     st.title("🛒 Despensa de Alimentos")
     
     col1, col2 = st.columns(2)
-# ... (sigue el código) ...
     with col1: st.metric("🥘 Comida Consumida (Acumulado)", f"{coste_comida:,.2f} €")
     with col2: st.metric("🗑️ Mermas / Tirado", f"{mermas_comida:,.2f} €")
         
@@ -396,14 +376,12 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
             
             with c_btn1:
                 if st.button(f"🍽️ Consumir 1 ud", key=f"con_{id_prod}"):
-                    # 1. ACTUALIZAR BASE DE DATOS Y CERRAR CONEXIÓN (Previene Database Locked)
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Consumido')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
                     conexion.commit()
                     conexion.close()
                     
-                    # 2. EJECUTAR LÓGICA DE LISTA DE COMPRA CON LA BASE DE DATOS LIBRE
                     if cant - 1 == 0: 
                         mejor_super = obtener_mejor_super(nombre, tabla="despensa")
                         añadir_a_lista_compra(nombre.lower(), mejor_super)
@@ -411,14 +389,12 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
                     
             with c_btn2:
                 if st.button(f"🗑️ Tirar / Merma", key=f"tir_{id_prod}"):
-                    # 1. ACTUALIZAR BASE DE DATOS Y CERRAR CONEXIÓN (Previene Database Locked)
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Tirado')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
                     conexion.commit()
                     conexion.close()
                     
-                    # 2. EJECUTAR LÓGICA DE LISTA DE COMPRA CON LA BASE DE DATOS LIBRE
                     if cant - 1 == 0: 
                         mejor_super = obtener_mejor_super(nombre, tabla="despensa")
                         añadir_a_lista_compra(nombre.lower(), mejor_super)
@@ -426,7 +402,7 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No hay alimentos en la despensa.")
-        
+
 elif opcion_menu == "🏠 Utensilios (Hogar)":
     st.title("🏠 Inventario de Utensilios y Limpieza")
     
@@ -468,20 +444,17 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
             with c1: st.write(f"🔹 **{nombre}** ({superm}) — **{cant} uds** | **{precio} €/ud**")
             with c2:
                 if st.button("🧹 Gastar 1 ud", key=f"uso_hogar_{id_prod}"):
-                    # Prevención de Deadlock
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.commit()
                     conexion.close()
                     
                     if cant - 1 == 0: 
-                        # Ahora busca dinámicamente en la tabla utensilios
                         mejor_super = obtener_mejor_super(nombre, tabla="utensilios")
                         añadir_a_lista_compra(nombre.lower(), mejor_super)
                     st.rerun()
             with c3:
                 if st.button("🗑️ Desechar", key=f"tir_hogar_{id_prod}"):
-                    # Prevención de Deadlock
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.commit()
@@ -494,7 +467,7 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No tienes utensilios o productos de limpieza registrados.")
-        
+
 elif opcion_menu == "🛒 Lista de la Compra":
     st.title("🛒 Lista de la Compra Inteligente")
     
@@ -643,9 +616,7 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
         with c3: proj_months = st.number_input("Meses", min_value=1, step=1)
         
         if st.form_submit_button("Lanzar Proyecto") and proj_name:
-            # Validación de viabilidad incorporada aquí
             cuota_necesaria = proj_target / proj_months if proj_months > 0 else proj_target
-            
             if cuota_necesaria > capacidad_ahorroador_teorica:
                 st.error(f"🚨 Inviable: La cuota necesaria ({cuota_necesaria:.2f} €) supera tu Ahorro Libre actual ({capacidad_ahorroador_teorica:.2f} €).")
             else:
@@ -749,7 +720,6 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                 cursor = conexion.cursor()
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 
-                # Extracción segura mediante .get() para evitar KeyErrors
                 for item in datos.get('articulos_despensa', []):
                     producto = item.get('producto', 'Alimento sin clasificar').lower().strip()
                     unidades = item.get('unidades', 1)
@@ -765,7 +735,8 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                     concepto_hogar = gasto.get('concepto', 'Utensilio desconocido').capitalize()
                     precio_total_hogar = gasto.get('precio_total', 0.0)
                     
-                    cursor.execute("INSERT INTO utensilios (nombre) VALUES (?)", (concepto_hogar,))
+                    cursor.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, 1, 1.0, ?, ?)", 
+                                   (concepto_hogar.lower(), super_det, precio_total_hogar, fecha_actual))
                     cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
                                    (fecha_actual, f"Bazar/Utensilio: {concepto_hogar}", precio_total_hogar, pago_det))
                 
@@ -773,7 +744,7 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                 conexion.close()
                 del st.session_state['resultado_json_ticket']
                 st.rerun()
-                
+
 elif opcion_menu == "⚙️ Configuración y Arranque":
     st.title("⚙️ Carga de Saldos Iniciales (Onboarding)")
     st.info("💡 Usa esta pestaña solo para configurar tu punto de partida. Carga lo que tienes en casa hoy. Una vez termines de volcar tu casa, puedes ignorar o borrar esta pestaña.")
@@ -791,7 +762,6 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
                 conexion = sqlite3.connect(DB_PATH, timeout=10)
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 
-                # Inyectamos como Ingresos Extras para que sumen a la Bolsa Única y a la Hucha
                 if saldo_banco_ini > 0:
                     conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago, subcuenta_extra) VALUES (?, 'Saldo Inicial: Banco', ?, 'Ingreso Extra', 'Tarjeta/PayPal', 'Extra-Banco')", 
                                      (fecha_actual, saldo_banco_ini))
@@ -817,7 +787,6 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
                 tabla = "despensa" if tipo_inv == "Despensa" else "utensilios"
                 conexion = sqlite3.connect(DB_PATH, timeout=10)
                 
-                # Inyectamos con Origen "Stock Inicial", peso 1.0 y precio 0.00€
                 conexion.execute(f"INSERT INTO {tabla} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, 'Stock Inicial', ?, 1.0, 0.0, ?)",
                                (nombre_inv.strip().lower(), unidades_inv, datetime.now().strftime("%Y-%m-%d")))
                 
