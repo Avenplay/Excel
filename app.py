@@ -196,7 +196,8 @@ opcion_menu = st.sidebar.radio("Ir a:", [
     "🔄 Gastos Recurrentes", 
     "💳 Compras a Plazos", 
     "🔮 Previsiones y Proyectos", 
-    "📷 Lector de Tickets IA"
+    "📷 Lector de Tickets IA",
+    "⚙️ Configuración y Arranque"  # <--- NUEVA PESTAÑA AÑADIDA
 ])
 
 # ==========================================
@@ -327,8 +328,14 @@ if opcion_menu == "💵 Control de Caja":
                 elif pago == 'Efectivo': running_hucha -= monto
             saldos_registro[m_id] = (running_banco, running_hucha)
             
-        for index, fila in df_movimientos.iterrows():
+for index, fila in df_movimientos.iterrows():
             m_id, m_fecha, m_concepto, m_monto, m_tipo, m_pago, m_sub = fila['id'], fila['fecha'], fila['concepto'], fila['monto'], fila['tipo_ingreso_gasto'], fila['metodo_pago'], fila['subcuenta_extra']
+            
+            # --- NUEVAS LÍNEAS PARA OCULTAR SALDOS INICIALES ---
+            if m_concepto.startswith("Saldo Inicial:"):
+                continue 
+            # ---------------------------------------------------
+
             bal_banco, bal_hucha = saldos_registro.get(m_id, (0.0, 0.0))
             
             txt_balance = f"💵 Balance Hucha: **{bal_hucha:,.2f} €**" if (m_pago == 'Efectivo' or m_sub == 'Extra-Efectivo') else f"🏦 Balance Banco: **{bal_banco:,.2f} €**"
@@ -762,4 +769,56 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                 conexion.commit()
                 conexion.close()
                 del st.session_state['resultado_json_ticket']
+                st.rerun()
+                
+elif opcion_menu == "⚙️ Configuración y Arranque":
+    st.title("⚙️ Carga de Saldos Iniciales (Onboarding)")
+    st.info("💡 Usa esta pestaña solo para configurar tu punto de partida. Carga lo que tienes en casa hoy. Una vez termines de volcar tu casa, puedes ignorar o borrar esta pestaña.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.header("💰 1. Dinero Inicial")
+        with st.form("form_saldos_iniciales"):
+            st.caption("Esto inyectará dinero en el sistema de forma 'fantasma' (no aparecerá en el historial de gastos/ingresos para mantenerlo limpio).")
+            saldo_banco_ini = st.number_input("Dinero real en tu Banco (€)", min_value=0.0, step=100.0)
+            saldo_hucha_ini = st.number_input("Dinero real en tu Cartera/Hucha (€)", min_value=0.0, step=50.0)
+            
+            if st.form_submit_button("Cargar Dinero al Sistema"):
+                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                fecha_actual = datetime.now().strftime("%Y-%m-%d")
+                
+                # Inyectamos como Ingresos Extras para que sumen a la Bolsa Única y a la Hucha
+                if saldo_banco_ini > 0:
+                    conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago, subcuenta_extra) VALUES (?, 'Saldo Inicial: Banco', ?, 'Ingreso Extra', 'Tarjeta/PayPal', 'Extra-Banco')", 
+                                     (fecha_actual, saldo_banco_ini))
+                if saldo_hucha_ini > 0:
+                    conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago, subcuenta_extra) VALUES (?, 'Saldo Inicial: Efectivo', ?, 'Ingreso Extra', 'Efectivo', 'Extra-Efectivo')", 
+                                     (fecha_actual, saldo_hucha_ini))
+                
+                conexion.commit()
+                conexion.close()
+                st.success("Saldos cargados. ¡Ve a Control de Caja y verás la magia!")
+                st.rerun()
+
+    with col2:
+        st.header("📦 2. Inventario Rápido")
+        with st.form("form_inv_rapido"):
+            st.caption("Carga artículos a coste 0.00 € y Origen 'Stock Inicial' para no alterar tus estadísticas financieras de consumo de este mes.")
+            
+            tipo_inv = st.radio("¿Dónde lo guardamos?", ["Despensa", "Hogar"], horizontal=True)
+            nombre_inv = st.text_input("Nombre del Producto (Ej. Leche, Papel Higiénico)")
+            unidades_inv = st.number_input("Cantidad", min_value=1, step=1)
+            
+            if st.form_submit_button("Cargar a Inventario") and nombre_inv:
+                tabla = "despensa" if tipo_inv == "Despensa" else "utensilios"
+                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                
+                # Inyectamos con Origen "Stock Inicial", peso 1.0 y precio 0.00€
+                conexion.execute(f"INSERT INTO {tabla} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, 'Stock Inicial', ?, 1.0, 0.0, ?)",
+                               (nombre_inv.strip().lower(), unidades_inv, datetime.now().strftime("%Y-%m-%d")))
+                
+                conexion.commit()
+                conexion.close()
+                st.success(f"{unidades_inv}x {nombre_inv.capitalize()} añadidos a tu {tipo_inv}.")
                 st.rerun()
