@@ -51,9 +51,9 @@ def inicializar_base_datos():
         unidades_actuales INTEGER NOT NULL DEFAULT 0, peso_neto_kg REAL NOT NULL, precio_unitario REAL NOT NULL,
         fecha_compra TEXT
     )""")
-    try:
+    try: 
         cursor.execute("ALTER TABLE despensa ADD COLUMN fecha_compra TEXT")
-    except:
+    except: 
         pass
 
     cursor.execute("""
@@ -131,15 +131,19 @@ def obtener_totales_sistema():
     extras_efectivo = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE subcuenta_extra='Extra-Efectivo'", conexion).iloc[0,0] or 0.0
     gastos_efectivo = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE tipo_ingreso_gasto LIKE 'Gasto%' AND metodo_pago='Efectivo'", conexion).iloc[0,0] or 0.0
     excepcionales = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE tipo_ingreso_gasto='Gasto Excepcional'", conexion).iloc[0,0] or 0.0
+    
     coste_comida = pd.read_sql_query("SELECT SUM(coste_estimado) FROM consumo_alimentos WHERE estado='Consumido'", conexion).iloc[0,0] or 0.0
     mermas_comida = pd.read_sql_query("SELECT SUM(coste_estimado) FROM consumo_alimentos WHERE estado='Tirado'", conexion).iloc[0,0] or 0.0
     total_recurrentes = pd.read_sql_query("SELECT SUM(monto) FROM gastos_recurrentes", conexion).iloc[0,0] or 0.0
+    
     cursor = conexion.cursor()
     cursor.execute("SELECT monto_total, meses_totales FROM compras_plazos WHERE meses_pagados < meses_totales")
     total_cuotas_plazos = sum(row[0] / row[1] for row in cursor.fetchall())
     conexion.close()
+    
     saldo_b = ingresos_fijos + extras_banco - gastos_tarjeta
     saldo_e = extras_efectivo - gastos_efectivo
+    
     return saldo_b, saldo_e, extras_banco, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos
 
 saldo_banco, saldo_efectivo, bizums_bloqueados, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos = obtener_totales_sistema()
@@ -171,9 +175,14 @@ def añadir_a_lista_compra(producto, super_rec):
 # --- SIDEBAR NAVEGACIÓN ---
 st.sidebar.title("📌 Menú Principal")
 opcion_menu = st.sidebar.radio("Ir a:", [
-    "💵 Control de Caja", "🍏 Despensa (Alimentos)", "🏠 Utensilios (Hogar)",
-    "🛒 Lista de la Compra", "🔄 Gastos Recurrentes", "💳 Compras a Plazos", 
-    "🔮 Previsiones y Proyectos", "📷 Lector de Tickets IA"
+    "💵 Control de Caja", 
+    "🍏 Despensa (Alimentos)", 
+    "🏠 Utensilios (Hogar)",
+    "🛒 Lista de la Compra",
+    "🔄 Gastos Recurrentes", 
+    "💳 Compras a Plazos", 
+    "🔮 Previsiones y Proyectos", 
+    "📷 Lector de Tickets IA"
 ])
 
 # ==========================================
@@ -182,11 +191,13 @@ opcion_menu = st.sidebar.radio("Ir a:", [
 if opcion_menu == "💵 Control de Caja":
     st.title("🧠 Tu Copiloto Financiero Inteligente")
     st.markdown("---")
+    
     col1, col2, col3, col4 = st.columns(4)
     with col1: st.metric(label="💳 Bolsa Única (Banco)", value=f"{saldo_banco:,.2f} €")
     with col2: st.metric(label="💵 Hucha Efectivo (Físico)", value=f"{saldo_efectivo:,.2f} €")
     with col3: st.metric(label="🔒 Extras en Banco (Bloqueado)", value=f"{bizums_bloqueados:,.2f} €")
     with col4: st.metric(label="🚨 Gastos Excepcionales", value=f"{excepcionales:,.2f} €")
+    
     st.markdown("---")
     col_l, col_r = st.columns(2)
     with col_l:
@@ -199,6 +210,7 @@ if opcion_menu == "💵 Control de Caja":
             if st.form_submit_button("Guardar Gasto") and concepto_g and monto_g > 0:
                 registrar_movimiento(concepto_g, monto_g, tipo_g, metodo_g)
                 st.rerun()
+                
     with col_r:
         st.header("💰 Registrar Entrada de Dinero")
         with st.form("form_ingreso"):
@@ -210,19 +222,22 @@ if opcion_menu == "💵 Control de Caja":
             if st.form_submit_button("Guardar Entrada") and concepto_i and monto_i > 0:
                 registrar_movimiento(concepto_i, monto_i, tipo_i, metodo_i, subcuenta_i)
                 st.rerun()
+                
     st.markdown("---")
     st.header("📜 Historial de Movimientos")
     conexion = sqlite3.connect(DB_PATH, timeout=10)
     df_movimientos = pd.read_sql_query("SELECT * FROM movimientos_caja ORDER BY id DESC", conexion)
     conexion.close()
+    
     if not df_movimientos.empty:
         df_chrono = df_movimientos.iloc[::-1].copy()
         running_banco = 0.0
         running_hucha = 0.0
         saldos_registro = {}
+        
         for idx, row in df_chrono.iterrows():
             m_id, monto, tipo, pago, sub = row['id'], row['monto'], row['tipo_ingreso_gasto'], row['metodo_pago'], row['subcuenta_extra']
-            if tipo == 'Ingreso Fijo':
+            if tipo == 'Ingreso Fijo': 
                 running_banco += monto
             elif tipo == 'Ingreso Extra':
                 if sub == 'Extra-Banco': running_banco += monto
@@ -231,12 +246,15 @@ if opcion_menu == "💵 Control de Caja":
                 if pago == 'Tarjeta/PayPal': running_banco -= monto
                 elif pago == 'Efectivo': running_hucha -= monto
             saldos_registro[m_id] = (running_banco, running_hucha)
+            
         for index, fila in df_movimientos.iterrows():
             m_id, m_fecha, m_concepto, m_monto, m_tipo, m_pago, m_sub = fila['id'], fila['fecha'], fila['concepto'], fila['monto'], fila['tipo_ingreso_gasto'], fila['metodo_pago'], fila['subcuenta_extra']
             bal_banco, bal_hucha = saldos_registro.get(m_id, (0.0, 0.0))
+            
             txt_balance = f"💵 Balance Hucha: **{bal_hucha:,.2f} €**" if (m_pago == 'Efectivo' or m_sub == 'Extra-Efectivo') else f"🏦 Balance Banco: **{bal_banco:,.2f} €**"
+            
             c_detalles, c_eliminar = st.columns([8, 2])
-            with c_detalles:
+            with c_detalles: 
                 st.write(f"📅 **{m_fecha}** | `{m_tipo}` | **{m_concepto}** -> **{m_monto:,.2f} €** ({m_pago}) | {txt_balance}")
             with c_eliminar:
                 if st.button("🗑️ Borrar", key=f"del_mov_{m_id}"):
@@ -249,13 +267,16 @@ if opcion_menu == "💵 Control de Caja":
 
 elif opcion_menu == "🍏 Despensa (Alimentos)":
     st.title("🛒 Despensa de Alimentos")
+    
     col1, col2 = st.columns(2)
     with col1: st.metric("🥘 Comida Consumida (Acumulado)", f"{coste_comida:,.2f} €")
     with col2: st.metric("🗑️ Mermas / Tirado", f"{mermas_comida:,.2f} €")
+        
     st.header("📦 Existencias (Alimentos)")
     conexion = sqlite3.connect(DB_PATH, timeout=10)
     df_stock = pd.read_sql_query("SELECT * FROM despensa WHERE unidades_actuales > 0", conexion)
     conexion.close()
+    
     if not df_stock.empty:
         df_stock['Precio_Kg_L'] = (df_stock['precio_unitario'] / df_stock['peso_neto_kg']).round(2)
         for index, fila in df_stock.iterrows():
@@ -281,27 +302,31 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
                     conexion.close()
                     st.rerun()
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
-    else:
+    else: 
         st.info("No hay alimentos en la despensa.")
 
 elif opcion_menu == "🏠 Utensilios (Hogar)":
     st.title("🏠 Inventario de Utensilios de Hogar")
+    
     with st.form("form_utensilios"):
         col1, col2 = st.columns([8, 2])
         with col1: nombre_u = st.text_input("Nombre del Utensilio")
         with col2: 
             st.write("")
             submit_u = st.form_submit_button("Añadir")
+            
         if submit_u and nombre_u:
             conexion = sqlite3.connect(DB_PATH, timeout=10)
             conexion.execute("INSERT INTO utensilios (nombre) VALUES (?)", (nombre_u.strip().capitalize(),))
             conexion.commit()
             conexion.close()
             st.rerun()
+            
     st.markdown("---")
     conexion = sqlite3.connect(DB_PATH, timeout=10)
     utensilios = pd.read_sql_query("SELECT * FROM utensilios", conexion)
     conexion.close()
+    
     if not utensilios.empty:
         for index, row in utensilios.iterrows():
             c1, c2, c3 = st.columns([6, 2, 2])
@@ -322,11 +347,12 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
                     conexion.close()
                     st.rerun()
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
-    else:
+    else: 
         st.info("No tienes utensilios registrados.")
 
 elif opcion_menu == "🛒 Lista de la Compra":
     st.title("🛒 Lista de la Compra Inteligente")
+    
     with st.form("form_lista_manual"):
         col1, col2, col3 = st.columns([5, 3, 2])
         with col1: prod_manual = st.text_input("Añadir producto suelto")
@@ -336,15 +362,19 @@ elif opcion_menu == "🛒 Lista de la Compra":
             if st.form_submit_button("Añadir a la Lista") and prod_manual:
                 añadir_a_lista_compra(prod_manual.capitalize(), super_manual)
                 st.rerun()
+                
     st.markdown("---")
     conexion = sqlite3.connect(DB_PATH, timeout=10)
     lista_df = pd.read_sql_query("SELECT * FROM lista_compra ORDER BY supermercado_recomendado ASC", conexion)
     conexion.close()
+    
     if not lista_df.empty:
         texto_export = "LISTA DE LA COMPRA\n====================\n\n"
+        
         for superm in sorted(lista_df['supermercado_recomendado'].unique()):
             st.subheader(f"🏪 {superm.upper()}")
             texto_export += f"--- {superm.upper()} ---\n"
+            
             productos_super = lista_df[lista_df['supermercado_recomendado'] == superm]
             for _, row in productos_super.iterrows():
                 c1, c2 = st.columns([9, 1])
@@ -359,4 +389,226 @@ elif opcion_menu == "🛒 Lista de la Compra":
                 texto_export += f"[ ] {row['producto'].capitalize()}\n"
             texto_export += "\n"
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
-       
+            
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        def limpiar_bd_lista():
+            conn_limpia = sqlite3.connect(DB_PATH)
+            conn_limpia.execute("DELETE FROM lista_compra")
+            conn_limpia.commit()
+            conn_limpia.close()
+
+        st.download_button(
+            label="📥 Descargar TXT para el Móvil y Limpiar Lista", 
+            data=texto_export, 
+            file_name="Lista_Compra.txt", 
+            mime="text/plain", 
+            on_click=limpiar_bd_lista
+        )
+    else: 
+        st.success("¡Tu lista de la compra está vacía!")
+
+elif opcion_menu == "🔄 Gastos Recurrentes":
+    st.title("🔄 Gestión de Gastos Fijos")
+    col_izq, col_der = st.columns([4, 6])
+    
+    with col_izq:
+        with st.form("form_add_recurrente"):
+            nombre_fijo = st.text_input("Nombre del Gasto").strip()
+            monto_fijo = st.number_input("Importe Mensual (€)", min_value=0.1, step=5.0)
+            if st.form_submit_button("Registrar") and nombre_fijo and monto_fijo > 0:
+                try:
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion.execute("INSERT INTO gastos_recurrentes (nombre_gasto, monto) VALUES (?, ?)", (nombre_fijo, monto_fijo))
+                    conexion.commit()
+                    conexion.close()
+                    st.rerun()
+                except sqlite3.IntegrityError: 
+                    st.error("⚠️ Ya existe ese gasto.")
+                    
+    with col_der:
+        conexion = sqlite3.connect(DB_PATH, timeout=10)
+        df_fijos = pd.read_sql_query("SELECT * FROM gastos_recurrentes", conexion)
+        conexion.close()
+        for index, fila in df_fijos.iterrows():
+            c_txt, c_btn = st.columns([8, 2])
+            with c_txt: st.write(f"💼 **{fila['nombre_gasto']}**: {fila['monto']:,.2f} € / mes")
+            with c_btn:
+                if st.button("🗑️ Eliminar", key=f"del_rec_{fila['id']}"):
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion.execute("DELETE FROM movimientos_caja WHERE concepto = ?", (f"Fijo Automático: {fila['nombre_gasto']}",))
+                    conexion.execute("DELETE FROM gastos_recurrentes WHERE id = ?", (fila['id'],))
+                    conexion.commit()
+                    conexion.close()
+                    st.rerun()
+
+elif opcion_menu == "💳 Compras a Plazos":
+    st.title("💳 Auditoría de Compras Financiadas a Plazos")
+    col_l, col_r = st.columns([4, 6])
+    
+    with col_l:
+        with st.form("form_plazos"):
+            art_nombre = st.text_input("Artículo").strip()
+            art_total = st.number_input("Coste Total (€)", min_value=1.0, step=50.0)
+            art_meses = st.number_input("Meses", min_value=1, step=1, value=12)
+            if st.form_submit_button("Auditar y Registrar"):
+                cuota = art_total / art_meses
+                if cuota < 25.0: 
+                    st.error(f"🚨 Cuota de {cuota:.2f} €/mes. Regla rota. ¡A tocateja!")
+                else:
+                    try:
+                        conexion = sqlite3.connect(DB_PATH, timeout=10)
+                        conexion.execute("INSERT INTO compras_plazos (articulo, monto_total, meses_totales, meses_pagados) VALUES (?, ?, ?, 0)", (art_nombre, art_total, art_meses))
+                        conexion.commit()
+                        conexion.close()
+                        st.rerun()
+                    except: 
+                        st.error("Ya existe.")
+                        
+    with col_r:
+        conexion = sqlite3.connect(DB_PATH, timeout=10)
+        df_plazos = pd.read_sql_query("SELECT * FROM compras_plazos", conexion)
+        conexion.close()
+        for index, fila in df_plazos.iterrows():
+            cuota_actual = fila['monto_total'] / fila['meses_totales']
+            st.write(f"💳 **{fila['articulo']}** | Cuota: **{cuota_actual:.2f} €/mes**")
+            st.progress((fila['meses_pagados'] / fila['meses_totales']))
+            if st.button("🗑️ Eliminar", key=f"del_plazo_{fila['id']}"):
+                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                conexion.execute("DELETE FROM movimientos_caja WHERE concepto LIKE ?", (f"Cuota Plazo: {fila['articulo']} (%",))
+                conexion.execute("DELETE FROM compras_plazos WHERE id = ?", (fila['id'],))
+                conexion.commit()
+                conexion.close()
+                st.rerun()
+
+elif opcion_menu == "🔮 Previsiones y Proyectos":
+    st.title("🔮 Consultor de Viabilidad")
+    col_p1, col_p2 = st.columns(2)
+    
+    with col_p1: sueldo_base = st.number_input("Nómina Fija (€)", min_value=0.0, value=1300.0)
+    with col_p2: gastos_fijos_est = st.number_input("Suministros Variables", min_value=0.0, value=150.0)
+        
+    capacidad_ahorroador_teorica = sueldo_base - gastos_fijos_est - total_recurrentes - total_cuotas_plazos
+    st.info(f"💡 Capacidad de ahorro libre: **{capacidad_ahorroador_teorica:.2f} € / mes**.")
+    
+    with st.form("form_proyecto"):
+        c1, c2, c3 = st.columns(3)
+        with c1: proj_name = st.text_input("Proyecto")
+        with c2: proj_target = st.number_input("Objetivo (€)", min_value=10.0)
+        with c3: proj_months = st.number_input("Meses", min_value=1, step=1)
+        if st.form_submit_button("Lanzar Proyecto") and proj_name:
+            try:
+                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                conexion.execute("INSERT INTO proyectos_futuros (nombre_proyecto, objetivo_total, meses_restantes) VALUES (?, ?, ?)", (proj_name, proj_target, proj_months))
+                conexion.commit()
+                conexion.close()
+                st.rerun()
+            except: 
+                st.error("Ya existe.")
+                
+    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    df_proj = pd.read_sql_query("SELECT * FROM proyectos_futuros", conexion)
+    conexion.close()
+    
+    for index, fila in df_proj.iterrows():
+        faltan = fila['objetivo_total'] - fila['ahorrado_acumulado']
+        cuota = faltan / fila['meses_restantes'] if fila['meses_restantes'] > 0 else faltan
+        st.subheader(f"🎯 Proyecto: {fila['nombre_proyecto']}")
+        st.progress(min(100.0, (fila['ahorrado_acumulado'] / fila['objetivo_total']) * 100) / 100.0)
+        
+        col_add1, col_add2, col_add3 = st.columns([2, 5, 3])
+        with col_add1: abono = st.number_input(f"Abonar (€)", min_value=0.0, step=10.0, key=f"num_{fila['id']}")
+        with col_add2:
+            st.write("")
+            if st.button("Confirmar", key=f"btn_h_{fila['id']}") and abono > 0:
+                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                conexion.execute("UPDATE proyectos_futuros SET ahorrado_acumulado = ahorrado_acumulado + ? WHERE id = ?", (abono, fila['id']))
+                conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+                                 (datetime.now().strftime("%Y-%m-%d"), f"Abono hucha: {fila['nombre_proyecto']}", abono))
+                conexion.commit()
+                conexion.close()
+                st.rerun()
+        with col_add3:
+            st.write("")
+            if st.button("🗑️ Eliminar Proyecto", key=f"del_proj_{fila['id']}"):
+                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                conexion.execute("DELETE FROM movimientos_caja WHERE concepto = ?", (f"Abono hucha: {fila['nombre_proyecto']}",))
+                conexion.execute("DELETE FROM proyectos_futuros WHERE id = ?", (fila['id'],))
+                conexion.commit()
+                conexion.close()
+                st.rerun()
+        st.markdown("<hr style='margin:0.5rem 0px;'/>", unsafe_allow_html=True)
+
+elif opcion_menu == "📷 Lector de Tickets IA":
+    st.title("📷 Escáner de Tickets Inteligente")
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
+    
+    if not api_key: 
+        st.warning("⚠️ Configura GEMINI_API_KEY en los Secrets de Streamlit.")
+    else:
+        archivo_ticket = st.file_uploader("Sube la foto del ticket:", type=["jpg", "jpeg", "png"])
+        if archivo_ticket:
+            imagen = Image.open(archivo_ticket)
+            st.image(imagen, width=250)
+            
+            if st.button("🚀 Analizar Ticket"):
+                with st.spinner("Procesando con IA..."):
+                    try:
+                        client = genai.Client(api_key=api_key)
+                        imagen.save("temp_ticket.png")
+                        prompt = "Analiza este ticket y devuelve estrictamente un objeto JSON con las claves: supermercado, metodo_pago, articulos_despensa (lista de objetos: producto, unidades, peso_kg, precio_unitario), y gastos_hogar (lista: concepto, precio_total). Sin explicaciones, solo el JSON."
+                        
+                        uploaded_file = client.files.upload(file="temp_ticket.png")
+                        response = client.models.generate_content(model='gemini-2.5-flash', contents=[uploaded_file, prompt])
+                        raw_text = response.text.strip()
+                        
+                        json_marker = chr(96) * 3 + "json"
+                        end_marker = chr(96) * 3
+                        
+                        if json_marker in raw_text:
+                            raw_text = raw_text.split(json_marker)[1]
+                        if end_marker in raw_text:
+                            raw_text = raw_text.rsplit(end_marker, 1)[0]
+                            
+                        st.session_state['resultado_json_ticket'] = json.loads(raw_text.strip())
+                        
+                        if os.path.exists("temp_ticket.png"): 
+                            os.remove("temp_ticket.png")
+                        st.success("¡Análisis completado!")
+                    except Exception as e: 
+                        st.error(f"Error procesando ticket: {e}")
+                    
+        if 'resultado_json_ticket' in st.session_state:
+            datos = st.session_state['resultado_json_ticket']
+            c1, c2 = st.columns(2)
+            with c1: super_det = st.selectbox("Supermercado:", LISTA_SUPERS, index=LISTA_SUPERS.index(datos['supermercado']) if datos['supermercado'] in LISTA_SUPERS else 0)
+            with c2: pago_det = st.selectbox("Pago:", ["Efectivo", "Tarjeta/PayPal"], index=0 if datos['metodo_pago'] == "Efectivo" else 1)
+            
+            c_l, c_r = st.columns(2)
+            with c_l:
+                df_desp = pd.DataFrame(datos['articulos_despensa'])
+                if not df_desp.empty: st.dataframe(df_desp, use_container_width=True)
+            with c_r:
+                df_hogar = pd.DataFrame(datos['gastos_hogar'])
+                if not df_hogar.empty: st.dataframe(df_hogar, use_container_width=True)
+                
+            if st.button("🔨 Inyectar Todo al Sistema"):
+                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                cursor = conexion.cursor()
+                fecha_actual = datetime.now().strftime("%Y-%m-%d")
+                
+                for item in datos['articulos_despensa']:
+                    cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)", 
+                                   (item['producto'].lower().strip(), super_det, item['unidades'], item['peso_kg'], item['precio_unitario'], fecha_actual))
+                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
+                                   (fecha_actual, f"Alimento: {item['producto']}", item['unidades'] * item['precio_unitario'], pago_det))
+                
+                for gasto in datos['gastos_hogar']:
+                    cursor.execute("INSERT INTO utensilios (nombre) VALUES (?)", (gasto['concepto'].capitalize(),))
+                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
+                                   (fecha_actual, f"Bazar/Utensilio: {gasto['concepto']}", gasto['precio_total'], pago_det))
+                
+                conexion.commit()
+                conexion.close()
+                del st.session_state['resultado_json_ticket']
+                st.rerun()
