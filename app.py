@@ -93,6 +93,16 @@ def inicializar_base_datos():
         id INTEGER PRIMARY KEY AUTOINCREMENT, producto TEXT NOT NULL, supermercado_recomendado TEXT NOT NULL
     )""")
 
+    # --- TABLA CONFIGURACIÓN COCHE ---
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS configuracion_coche (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        letra_mensual REAL NOT NULL DEFAULT 0.0,
+        seguro_mensual REAL NOT NULL DEFAULT 0.0
+    )""")
+    # Inyectamos una fila por defecto para que la pestaña no dé error al arrancar
+    cursor.execute("INSERT OR IGNORE INTO configuracion_coche (id, letra_mensual, seguro_mensual) VALUES (1, 0.0, 0.0)")
+
     conexion.commit()
     conexion.close()
 
@@ -189,6 +199,7 @@ opcion_menu = st.sidebar.radio("Ir a:", [
     "🔄 Gastos Recurrentes", 
     "💳 Compras a Plazos", 
     "🔮 Previsiones y Proyectos", 
+    "🚗 Mi Coche",                  # <--- NUEVA PESTAÑA AQUÍ
     "📷 Lector de Tickets IA",
     "⚙️ Configuración y Arranque"
 ])
@@ -661,6 +672,86 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
                 conexion.close()
                 st.rerun()
         st.markdown("<hr style='margin:0.5rem 0px;'/>", unsafe_allow_html=True)
+
+elif opcion_menu == "🚗 Mi Coche":
+    st.title("🚗 Dashboard del Vehículo")
+    
+    # 1. Leer fijos del coche (Letra y Seguro)
+    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    config_coche = pd.read_sql_query("SELECT letra_mensual, seguro_mensual FROM configuracion_coche WHERE id=1", conexion)
+    letra_val = config_coche.iloc[0]['letra_mensual'] if not config_coche.empty else 0.0
+    seguro_val = config_coche.iloc[0]['seguro_mensual'] if not config_coche.empty else 0.0
+    
+    # 2. Leer gastos variables de ESTE MES (Gasolina, limpieza, etc.)
+    mes_actual = datetime.now().strftime("%Y-%m")
+    variables_df = pd.read_sql_query("SELECT * FROM movimientos_caja WHERE tipo_ingreso_gasto = 'Gasto Coche' AND fecha LIKE ?", conexion, params=(f"{mes_actual}%",))
+    conexion.close()
+    
+    gasto_var_total = variables_df['monto'].sum() if not variables_df.empty else 0.0
+    coste_total_mes = letra_val + seguro_val + gasto_var_total
+    
+    # --- MÉTRICAS SUPERIORES ---
+    st.info("💡 **TCO (Coste Total de Propiedad):** Esta es la radiografía real de lo que te cuesta mantener el vehículo este mes.")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1: st.metric("🔥 Coste Total este Mes", f"{coste_total_mes:,.2f} €")
+    with col2: st.metric("🏦 Letra (Fijo)", f"{letra_val:,.2f} €")
+    with col3: st.metric("🛡️ Seguro (Prorrateo Mes)", f"{seguro_val:,.2f} €")
+    with col4: st.metric("⛽ Variables (Gas, Lavado)", f"{gasto_var_total:,.2f} €")
+    
+    st.markdown("---")
+    
+    col_izq, col_der = st.columns(2)
+    
+    with col_izq:
+        st.header("⚙️ Configuración Fija")
+        with st.form("form_coche_fijos"):
+            st.caption("Actualiza tu letra y prorratea tu seguro (Ej: si pagas 600€ al año, pon 50€/mes).")
+            nueva_letra = st.number_input("Letra del Coche (€/mes)", min_value=0.0, step=10.0, value=float(letra_val))
+            nuevo_seguro = st.number_input("Seguro Mensualizado (€/mes)", min_value=0.0, step=5.0, value=float(seguro_val))
+            
+            if st.form_submit_button("Guardar Parámetros"):
+                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                conexion.execute("UPDATE configuracion_coche SET letra_mensual=?, seguro_mensual=? WHERE id=1", (nueva_letra, nuevo_seguro))
+                conexion.commit()
+                conexion.close()
+                st.success("Configuración del coche actualizada.")
+                st.rerun()
+                
+    with col_der:
+        st.header("⛽ Añadir Gasto Variable")
+        with st.form("form_coche_var"):
+            st.caption("Estos gastos sí se restarán inmediatamente de tu Banco o Efectivo.")
+            tipo_gasto_coche = st.selectbox("Categoría", ["Gasolina", "Lavadero / Limpieza", "Taller / Mantenimiento", "Peaje / Parking", "Otro"])
+            monto_coche = st.number_input("Importe (€)", min_value=0.0, step=5.0)
+            metodo_coche = st.selectbox("Pago", ["Tarjeta/PayPal", "Efectivo"])
+            
+            if st.form_submit_button("Registrar Gasto") and monto_coche > 0:
+                fecha_actual = datetime.now().strftime("%Y-%m-%d")
+                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                # Inyectamos con la etiqueta 'Gasto Coche' para que la Bolsa Única lo detecte y lo reste automáticamente
+                conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Coche', ?)",
+                               (fecha_actual, f"Coche: {tipo_gasto_coche}", monto_coche, metodo_coche))
+                conexion.commit()
+                conexion.close()
+                st.rerun()
+                
+    st.markdown("---")
+    st.subheader("📜 Historial de Variables (Este Mes)")
+    if not variables_df.empty:
+        for _, row in variables_df.iloc[::-1].iterrows():
+            c1, c2 = st.columns([9, 1])
+            with c1: 
+                st.write(f"📅 **{row['fecha']}** | {row['concepto']} -> **{row['monto']:,.2f} €** ({row['metodo_pago']})")
+            with c2:
+                if st.button("❌", key=f"del_coche_{row['id']}"):
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion.execute("DELETE FROM movimientos_caja WHERE id=?", (row['id'],))
+                    conexion.commit()
+                    conexion.close()
+                    st.rerun()
+            st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
+    else:
+        st.info("No has registrado gasolina ni limpiezas este mes.")
 
 elif opcion_menu == "📷 Lector de Tickets IA":
     st.title("📷 Escáner de Tickets Inteligente")
