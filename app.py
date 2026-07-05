@@ -343,6 +343,7 @@ for index, fila in df_movimientos.iterrows():
             c_detalles, c_eliminar = st.columns([8, 2])
             with c_detalles: 
                 st.write(f"📅 **{m_fecha}** | `{m_tipo}` | **{m_concepto}** -> **{m_monto:,.2f} €** ({m_pago}) | {txt_balance}")
+# ... (código anterior de borrar movimientos) ...
             with c_eliminar:
                 if st.button("🗑️ Borrar", key=f"del_mov_{m_id}"):
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
@@ -352,10 +353,12 @@ for index, fila in df_movimientos.iterrows():
                     st.rerun()
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
 
+# ELIF DEBE ESTAR PEGADO AL MARGEN IZQUIERDO (0 ESPACIOS)
 elif opcion_menu == "🍏 Despensa (Alimentos)":
     st.title("🛒 Despensa de Alimentos")
     
     col1, col2 = st.columns(2)
+# ... (sigue el código) ...
     with col1: st.metric("🥘 Comida Consumida (Acumulado)", f"{coste_comida:,.2f} €")
     with col2: st.metric("🗑️ Mermas / Tirado", f"{mermas_comida:,.2f} €")
         
