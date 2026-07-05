@@ -539,78 +539,72 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
 # VISTA 6: LECTOR DE TICKETS IA (GEMINI)
 # ==========================================
 elif opcion_menu == "📷 Lector de Tickets IA":
-    st.title("📷 Escáner de Tickets Inteligente por API (Gemini)")
+    st.title("📷 Escáner de Tickets Inteligente")
     st.markdown("---")
-    if not api_key_input: st.warning("⚠️ Introduce tu Gemini API Key en la barra lateral.")
-    else:
-        archivo_ticket = st.file_uploader("Sube la foto del ticket:", type=["jpg", "jpeg", "png"])
-        if archivo_ticket is not None:
-            imagen = Image.open(archivo_ticket)
-            st.image(imagen, width=250)
-            if st.button("🚀 Analizar Ticket"):
-                with st.spinner("Procesando..."):
-                    try:
-                        client = genai.Client(api_key=api_key_input)
-                        imagen.save("temp_ticket.png")
-                        prompt = "Analiza la imagen de este ticket y devuelve estrictamente un objeto JSON con las claves: supermercado, metodo_pago, articulos_despensa (lista de objetos con producto, unidades, peso_kg, precio_unitario), y gastos_hogar (lista de objetos con concepto, precio_total). Sin marcas markdown."
-                        uploaded_file = client.files.upload(file="temp_ticket.png")
-                        response = client.models.generate_content(model='gemini-2.5-flash', contents=[uploaded_file, prompt])
-                        
-                        raw_text = response.text.strip()
-                        
-                        # PARSEO SEGURO CON RECORTE
-                        if raw_text.startswith("```json"):
-                            raw_text = raw_text[7:]
-                        elif raw_text.startswith("```"):
-                            raw_text = raw_text[3:]
-                        if raw_text.endswith("```"):
-                            raw_text = raw_text[:-3]
-                            
-                        raw_text = raw_text.strip()
-                        st.session_state['resultado_json_ticket'] = json.loads(raw_text)
-                        
-                        if os.path.exists("temp_ticket.png"): os.remove("temp_ticket.png")
-                        st.success("¡Completado!")
-                    except Exception as e: st.error(f"Error: {e}")
+    
+    # Obtenemos la API Key desde los secrets de Streamlit Cloud
+    api_key = st.secrets["GEMINI_API_KEY"]
+    
+    archivo_ticket = st.file_uploader("Sube la foto del ticket:", type=["jpg", "jpeg", "png"])
+    if archivo_ticket is not None:
+        imagen = Image.open(archivo_ticket)
+        st.image(imagen, width=250)
+        
+        if st.button("🚀 Analizar Ticket"):
+            with st.spinner("Procesando con IA..."):
+                try:
+                    client = genai.Client(api_key=api_key)
+                    imagen.save("temp_ticket.png")
+                    prompt = "Analiza este ticket y devuelve estrictamente un objeto JSON con las claves: supermercado, metodo_pago, articulos_despensa (lista de objetos: producto, unidades, peso_kg, precio_unitario), y gastos_hogar (lista: concepto, precio_total). Sin explicaciones, solo el JSON."
                     
-            if 'resultado_json_ticket' in st.session_state:
-                datos = st.session_state['resultado_json_ticket']
-                col_i1, col_i2 = st.columns(2)
-                with col_i1: super_detectado = st.selectbox("Supermercado:", LISTA_SUPERS, index=LISTA_SUPERS.index(datos['supermercado']) if datos['supermercado'] in LISTA_SUPERS else 0)
-                with col_i2: pago_detectado = st.selectbox("Pago:", ["Efectivo", "Tarjeta/PayPal"], index=0 if datos['metodo_pago'] == "Efectivo" else 1)
-                col_l, col_r = st.columns(2)
-                with col_l:
-                    df_desp = pd.DataFrame(datos['articulos_despensa'])
-                    if not df_desp.empty: st.dataframe(df_desp, use_container_width=True)
-                with col_r:
-                    df_hogar = pd.DataFrame(datos['gastos_hogar'])
-                    if not df_hogar.empty: st.dataframe(df_hogar, use_container_width=True)
+                    uploaded_file = client.files.upload(file="temp_ticket.png")
+                    response = client.models.generate_content(model='gemini-2.5-flash', contents=[uploaded_file, prompt])
                     
-                if st.button("🔨 Inyectar Todo"):
-                    conexion = sqlite3.connect(DB_PATH, timeout=10); cursor = conexion.cursor()
-                    fecha_actual = datetime.now().strftime("%Y-%m-%d")
+                    raw_text = response.text.strip()
                     
-                    for item in datos['articulos_despensa']:
-                        q_ins_desp = (
-                            "INSERT INTO despensa "
-                            "(producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario) "
-                            "VALUES (?, ?, ?, ?, ?)"
-                        )
-                        cursor.execute(q_ins_desp, (item['producto'].lower().strip(), super_detectado, item['unidades'], item['peso_kg'], item['precio_unitario']))
-                        
-                        q_ins_caja1 = (
-                            "INSERT INTO movimientos_caja "
-                            "(fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) "
-                            "VALUES (?, ?, ?, 'Gasto Habitual', ?)"
-                        )
-                        cursor.execute(q_ins_caja1, (fecha_actual, f"Alimento: {item['producto']}", item['unidades'] * item['precio_unitario'], pago_detectado))
-                        
-                    for gasto in datos['gastos_hogar']:
-                        q_ins_caja2 = (
-                            "INSERT INTO movimientos_caja "
-                            "(fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) "
-                            "VALUES (?, ?, ?, 'Gasto Habitual', ?)"
-                        )
-                        cursor.execute(q_ins_caja2, (fecha_actual, f"Bazar: {gasto['concepto']}", gasto['precio_total'], pago_detectado))
-                        
-                    conexion.commit(); conexion.close(); del st.session_state['resultado_json_ticket']; st.rerun()
+                    # Limpieza avanzada del formato JSON
+                    if "```json" in raw_text:
+                        raw_text = raw_text.split("```json")[1]
+                    raw_text = raw_text.rsplit("```", 1)[0]
+                    
+                    st.session_state['resultado_json_ticket'] = json.loads(raw_text.strip())
+                    
+                    if os.path.exists("temp_ticket.png"): 
+                        os.remove("temp_ticket.png")
+                    st.success("¡Análisis completado!")
+                except Exception as e: 
+                    st.error(f"Error procesando ticket: {e}")
+                    
+        if 'resultado_json_ticket' in st.session_state:
+            datos = st.session_state['resultado_json_ticket']
+            col_i1, col_i2 = st.columns(2)
+            with col_i1: 
+                super_detectado = st.selectbox("Supermercado:", LISTA_SUPERS, index=LISTA_SUPERS.index(datos['supermercado']) if datos['supermercado'] in LISTA_SUPERS else 0)
+            with col_i2: 
+                pago_detectado = st.selectbox("Pago:", ["Efectivo", "Tarjeta/PayPal"], index=0 if datos['metodo_pago'] == "Efectivo" else 1)
+            
+            col_l, col_r = st.columns(2)
+            with col_l:
+                df_desp = pd.DataFrame(datos['articulos_despensa'])
+                if not df_desp.empty: st.dataframe(df_desp, use_container_width=True)
+            with col_r:
+                df_hogar = pd.DataFrame(datos['gastos_hogar'])
+                if not df_hogar.empty: st.dataframe(df_hogar, use_container_width=True)
+            
+            if st.button("🔨 Inyectar Todo al Sistema"):
+                conexion = sqlite3.connect(DB_PATH, timeout=10); cursor = conexion.cursor()
+                fecha_actual = datetime.now().strftime("%Y-%m-%d")
+                
+                # Inyectar Despensa
+                for item in datos['articulos_despensa']:
+                    cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario) VALUES (?, ?, ?, ?, ?)", 
+                                   (item['producto'].lower().strip(), super_detectado, item['unidades'], item['peso_kg'], item['precio_unitario']))
+                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
+                                   (fecha_actual, f"Alimento: {item['producto']}", item['unidades'] * item['precio_unitario'], pago_detectado))
+                
+                # Inyectar Bazar/Hogar
+                for gasto in datos['gastos_hogar']:
+                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
+                                   (fecha_actual, f"Bazar: {gasto['concepto']}", gasto['precio_total'], pago_detectado))
+                
+                conexion.commit(); conexion.close(); del st.session_state['resultado_json_ticket']; st.rerun()
