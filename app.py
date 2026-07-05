@@ -349,6 +349,26 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
     with col1: st.metric("🥘 Comida Consumida (Acumulado)", f"{coste_comida:,.2f} €")
     with col2: st.metric("🗑️ Mermas / Tirado", f"{mermas_comida:,.2f} €")
         
+    with st.form("form_despensa_manual"):
+        st.subheader("➕ Añadir stock manual (Sin registrar pago)")
+        st.caption("Usa esto para productos que ya tenías en casa o regalos sin coste.")
+        col_d1, col_d2, col_d3 = st.columns([4, 3, 3])
+        with col_d1: nombre_d = st.text_input("Producto")
+        with col_d2: super_d = st.selectbox("Origen", LISTA_SUPERS)
+        with col_d3:
+            unidades_d = st.number_input("Unidades", min_value=1, step=1)
+            peso_d = st.number_input("Peso/L por ud.", min_value=0.01, value=1.0)
+            precio_d = st.number_input("Precio/Ud aprox (€)", min_value=0.0, step=0.1)
+            
+        if st.form_submit_button("Añadir al Inventario") and nombre_d:
+            conexion = sqlite3.connect(DB_PATH, timeout=10)
+            conexion.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)",
+                           (nombre_d.strip().lower(), super_d, unidades_d, peso_d, precio_d, datetime.now().strftime("%Y-%m-%d")))
+            conexion.commit()
+            conexion.close()
+            st.rerun()
+
+    st.markdown("---")
     st.header("📦 Existencias (Alimentos)")
     conexion = sqlite3.connect(DB_PATH, timeout=10)
     df_stock = pd.read_sql_query("SELECT * FROM despensa WHERE unidades_actuales > 0", conexion)
@@ -360,32 +380,42 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
             id_prod, nombre, superm, cant, peso, precio, p_kg = fila['id'], fila['producto_generico'].capitalize(), fila['supermercado'], fila['unidades_actuales'], fila['peso_neto_kg'], fila['precio_unitario'], fila['Precio_Kg_L']
             c_info, c_btn1, c_btn2 = st.columns([6, 2, 2])
             with c_info: st.write(f"🟢 **{nombre}** ({superm}) — **{cant} uds** | {peso} Kg/L | {precio}€/ud (**{p_kg} €/Kg**)")
+            
             with c_btn1:
                 if st.button(f"🍽️ Consumir 1 ud", key=f"con_{id_prod}"):
+                    # Abrimos, actualizamos, guardamos y CERRAMOS antes de hacer nada más
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Consumido')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
-                    if cant - 1 == 0: añadir_a_lista_compra(nombre.lower(), obtener_mejor_super(nombre))
                     conexion.commit()
                     conexion.close()
+                    
+                    # Llamadas a funciones externas con la DB libre de bloqueos
+                    if cant - 1 == 0: 
+                        mejor_super = obtener_mejor_super(nombre)
+                        añadir_a_lista_compra(nombre.lower(), mejor_super)
                     st.rerun()
+                    
             with c_btn2:
                 if st.button(f"🗑️ Tirar / Merma", key=f"tir_{id_prod}"):
+                    # Abrimos, actualizamos, guardamos y CERRAMOS antes de hacer nada más
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Tirado')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
-                    if cant - 1 == 0: añadir_a_lista_compra(nombre.lower(), obtener_mejor_super(nombre))
                     conexion.commit()
                     conexion.close()
+                    
+                    # Llamadas a funciones externas con la DB libre de bloqueos
+                    if cant - 1 == 0: 
+                        mejor_super = obtener_mejor_super(nombre)
+                        añadir_a_lista_compra(nombre.lower(), mejor_super)
                     st.rerun()
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No hay alimentos en la despensa.")
-
 elif opcion_menu == "🏠 Utensilios (Hogar)":
     st.title("🏠 Inventario de Utensilios y Limpieza")
     
-    # Mostramos la métrica del dinero que tienes invertido aquí
     st.metric(label="🧴 Valor Inmovilizado en Hogar", value=f"{inmovilizado_hogar:,.2f} €")
     
     with st.form("form_utensilios_manual"):
@@ -400,7 +430,6 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
             
         if st.form_submit_button("Añadir al Inventario") and nombre_u:
             conexion = sqlite3.connect(DB_PATH, timeout=10)
-            # Insertamos con peso_neto 1.0 por defecto ya que en hogar rara vez calculamos el precio/kilo
             conexion.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, 1.0, ?, ?)",
                            (nombre_u.strip().lower(), super_u, unidades_u, precio_u, datetime.now().strftime("%Y-%m-%d")))
             conexion.commit()
@@ -425,24 +454,29 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
             with c1: st.write(f"🔹 **{nombre}** ({superm}) — **{cant} uds** | **{precio} €/ud**")
             with c2:
                 if st.button("🧹 Gastar 1 ud", key=f"uso_hogar_{id_prod}"):
+                    # Prevención de Deadlock: Cerrar antes de llamar a añadir_a_lista_compra
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
-                    if cant - 1 == 0: añadir_a_lista_compra(nombre.lower(), "Sección Hogar")
                     conexion.commit()
                     conexion.close()
+                    
+                    if cant - 1 == 0: 
+                        añadir_a_lista_compra(nombre.lower(), "Sección Hogar")
                     st.rerun()
             with c3:
                 if st.button("🗑️ Desechar", key=f"tir_hogar_{id_prod}"):
+                    # Prevención de Deadlock
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
-                    if cant - 1 == 0: añadir_a_lista_compra(nombre.lower(), "Sección Hogar")
                     conexion.commit()
                     conexion.close()
+                    
+                    if cant - 1 == 0: 
+                        añadir_a_lista_compra(nombre.lower(), "Sección Hogar")
                     st.rerun()
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No tienes utensilios o productos de limpieza registrados.")
-
 elif opcion_menu == "🛒 Lista de la Compra":
     st.title("🛒 Lista de la Compra Inteligente")
     
