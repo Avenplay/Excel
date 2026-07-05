@@ -167,10 +167,13 @@ def registrar_movimiento(concepto, monto, tipo, metodo, subcuenta='N/A'):
     conexion.commit()
     conexion.close()
 
-def obtener_mejor_super(producto_nombre):
+def obtener_mejor_super(producto_nombre, tabla="despensa"):
     conexion = sqlite3.connect(DB_PATH, timeout=10)
     fecha_limite = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
-    q = "SELECT supermercado FROM despensa WHERE producto_generico = ? AND fecha_compra >= ? GROUP BY supermercado ORDER BY AVG(precio_unitario/peso_neto_kg) ASC LIMIT 1"
+    
+    # Inyectamos el nombre de la tabla de forma dinámica
+    q = f"SELECT supermercado FROM {tabla} WHERE producto_generico = ? AND fecha_compra >= ? GROUP BY supermercado ORDER BY AVG(precio_unitario/peso_neto_kg) ASC LIMIT 1"
+    
     res = conexion.execute(q, (producto_nombre.lower().strip(), fecha_limite)).fetchone()
     conexion.close()
     return res[0] if res else "Cualquiera"
@@ -413,6 +416,7 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No hay alimentos en la despensa.")
+        
 elif opcion_menu == "🏠 Utensilios (Hogar)":
     st.title("🏠 Inventario de Utensilios y Limpieza")
     
@@ -454,14 +458,16 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
             with c1: st.write(f"🔹 **{nombre}** ({superm}) — **{cant} uds** | **{precio} €/ud**")
             with c2:
                 if st.button("🧹 Gastar 1 ud", key=f"uso_hogar_{id_prod}"):
-                    # Prevención de Deadlock: Cerrar antes de llamar a añadir_a_lista_compra
+                    # Prevención de Deadlock
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.commit()
                     conexion.close()
                     
                     if cant - 1 == 0: 
-                        añadir_a_lista_compra(nombre.lower(), "Sección Hogar")
+                        # Ahora busca dinámicamente en la tabla utensilios
+                        mejor_super = obtener_mejor_super(nombre, tabla="utensilios")
+                        añadir_a_lista_compra(nombre.lower(), mejor_super)
                     st.rerun()
             with c3:
                 if st.button("🗑️ Desechar", key=f"tir_hogar_{id_prod}"):
@@ -472,11 +478,13 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
                     conexion.close()
                     
                     if cant - 1 == 0: 
-                        añadir_a_lista_compra(nombre.lower(), "Sección Hogar")
+                        mejor_super = obtener_mejor_super(nombre, tabla="utensilios")
+                        añadir_a_lista_compra(nombre.lower(), mejor_super)
                     st.rerun()
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No tienes utensilios o productos de limpieza registrados.")
+        
 elif opcion_menu == "🛒 Lista de la Compra":
     st.title("🛒 Lista de la Compra Inteligente")
     
