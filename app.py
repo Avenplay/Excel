@@ -106,6 +106,14 @@ def inicializar_base_datos():
         monto_total REAL NOT NULL, mes_objetivo INTEGER NOT NULL
     )""")
 
+# NUEVA TABLA: FONDO DE EMERGENCIA
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS fondo_emergencia (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        acumulado REAL NOT NULL DEFAULT 0.0
+    )""")
+    cursor.execute("INSERT OR IGNORE INTO fondo_emergencia (id, acumulado) VALUES (1, 0.0)")
+    
     conexion.commit()
     conexion.close()
 
@@ -679,8 +687,8 @@ elif opcion_menu == "🗓️ Previsiones Anuales":
             st.info("No tienes gastos anuales previstos. ¡Configura tu seguro o impuestos aquí!")
 
 elif opcion_menu == "🔮 Previsiones y Proyectos":
-    st.title("🔮 Consultor de Viabilidad")
-    st.caption("Esta herramienta te dice cuánto dinero libre tienes realmente, tras apartar todo lo necesario para vivir, pagar tus deudas y tus seguros futuros.")
+    st.title("🔮 Consultor de Viabilidad y Airbag")
+    st.caption("Descubre cuánto dinero libre tienes realmente y blinda tu economía ante imprevistos.")
     
     # --- MOTOR DE CÁLCULO DE MEDIA MÓVIL (SUPERMERCADO Y HOGAR) ---
     conexion = sqlite3.connect(DB_PATH, timeout=10)
@@ -704,8 +712,43 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     with col_p1: sueldo_base = st.number_input("Nómina Fija Mensual (€)", min_value=0.0, value=1300.0)
     with col_p2: gastos_fijos_est = st.number_input("Suministros (Agua, Luz, Internet, etc)", min_value=0.0, value=150.0)
         
-    # LA MATEMÁTICA DEFINITIVA DEL AHORRO LIBRE (Ahora incluye la media móvil)
-    capacidad_ahorroador_teorica = sueldo_base - gastos_fijos_est - total_recurrentes - total_cuotas_plazos - total_provisiones_mes - media_supermercado
+    # EL CÁLCULO DEL COSTE DE SUPERVIVENCIA
+    coste_supervivencia = gastos_fijos_est + total_recurrentes + total_cuotas_plazos + total_provisiones_mes + media_supermercado
+    objetivo_airbag = coste_supervivencia * 3
+    
+    # LA MATEMÁTICA DEFINITIVA DEL AHORRO LIBRE
+    capacidad_ahorroador_teorica = sueldo_base - coste_supervivencia
+    
+    # LECTURA DEL AIRBAG ACTUAL
+    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    df_airbag = pd.read_sql_query("SELECT acumulado FROM fondo_emergencia WHERE id=1", conexion)
+    acumulado_airbag = df_airbag.iloc[0]['acumulado'] if not df_airbag.empty else 0.0
+    conexion.close()
+    
+    st.markdown("---")
+    st.header("🛡️ Tu Airbag Financiero (Fondo de Emergencia)")
+    st.info(f"💡 **Coste de Supervivencia:** Tu casa necesita **{coste_supervivencia:,.2f} €/mes** para funcionar. Tu objetivo ideal es acumular 3 meses de tranquilidad (**{objetivo_airbag:,.2f} €**).")
+    
+    progreso_airbag = min(100.0, (acumulado_airbag / objetivo_airbag) * 100) if objetivo_airbag > 0 else 100.0
+    
+    col_a1, col_a2, col_a3 = st.columns([6, 2, 2])
+    with col_a1:
+        st.progress(progreso_airbag / 100.0)
+        st.write(f"Estado del Airbag: **{acumulado_airbag:,.2f} €** / {objetivo_airbag:,.2f} € ({progreso_airbag:.1f}%)")
+    with col_a2:
+        abono_airbag = st.number_input("Mover al Airbag (€)", min_value=0.0, step=50.0)
+    with col_a3:
+        st.write("") # Espaciador
+        if st.button("🛡️ Blindar Dinero") and abono_airbag > 0:
+            conexion = sqlite3.connect(DB_PATH, timeout=10)
+            conexion.execute("UPDATE fondo_emergencia SET acumulado = acumulado + ? WHERE id = 1", (abono_airbag,))
+            conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+                             (datetime.now().strftime("%Y-%m-%d"), "Abono: Fondo de Emergencia", abono_airbag))
+            conexion.commit()
+            conexion.close()
+            st.rerun()
+
+    st.markdown("---")
     
     st.success(f"### 💰 AHORRO LIBRE REAL: {capacidad_ahorroador_teorica:,.2f} € / mes")
     
@@ -714,9 +757,12 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     st.markdown(f"➖ Suministros (Agua/Luz): `{gastos_fijos_est:,.2f} €`")
     st.markdown(f"➖ Recurrentes (Suscripciones/Letras): `{total_recurrentes:,.2f} €`")
     st.markdown(f"➖ Cuotas de Plazos: `{total_cuotas_plazos:,.2f} €`")
-    st.markdown(f"➖ Provisiones (Colchón para Seguros/Taller): `{total_provisiones_mes:,.2f} €`")
+    st.markdown(f"➖ Provisiones (Seguros/IBI): `{total_provisiones_mes:,.2f} €`")
     st.markdown(f"➖ Media Supermercado (Comida/Hogar): `{media_supermercado:,.2f} €`")
     st.markdown("---")
+    
+    if progreso_airbag < 100.0:
+        st.warning("⚠️ **Atención:** Tu Airbag Financiero aún no está lleno. Te recomendamos encarecidamente priorizar este fondo antes de lanzar proyectos de capricho.")
     
     with st.form("form_proyecto"):
         st.subheader("🚀 Lanzar un Proyecto Finalista (Viajes, Caprichos)")
@@ -771,7 +817,7 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
                 conexion.close()
                 st.rerun()
         st.markdown("<hr style='margin:0.5rem 0px;'/>", unsafe_allow_html=True)
-
+        
 elif opcion_menu == "🚗 Mi Coche":
     st.title("🚗 Dashboard del Vehículo")
     
