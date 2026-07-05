@@ -496,15 +496,22 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
         with c1: proj_name = st.text_input("Proyecto")
         with c2: proj_target = st.number_input("Objetivo (€)", min_value=10.0)
         with c3: proj_months = st.number_input("Meses", min_value=1, step=1)
+        
         if st.form_submit_button("Lanzar Proyecto") and proj_name:
-            try:
-                conexion = sqlite3.connect(DB_PATH, timeout=10)
-                conexion.execute("INSERT INTO proyectos_futuros (nombre_proyecto, objetivo_total, meses_restantes) VALUES (?, ?, ?)", (proj_name, proj_target, proj_months))
-                conexion.commit()
-                conexion.close()
-                st.rerun()
-            except: 
-                st.error("Ya existe.")
+            # Validación de viabilidad incorporada aquí
+            cuota_necesaria = proj_target / proj_months if proj_months > 0 else proj_target
+            
+            if cuota_necesaria > capacidad_ahorroador_teorica:
+                st.error(f"🚨 Inviable: La cuota necesaria ({cuota_necesaria:.2f} €) supera tu Ahorro Libre actual ({capacidad_ahorroador_teorica:.2f} €).")
+            else:
+                try:
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion.execute("INSERT INTO proyectos_futuros (nombre_proyecto, objetivo_total, meses_restantes) VALUES (?, ?, ?)", (proj_name, proj_target, proj_months))
+                    conexion.commit()
+                    conexion.close()
+                    st.rerun()
+                except sqlite3.IntegrityError: 
+                    st.error("⚠️ Ya existe un proyecto con ese nombre.")
                 
     conexion = sqlite3.connect(DB_PATH, timeout=10)
     df_proj = pd.read_sql_query("SELECT * FROM proyectos_futuros", conexion)
@@ -581,15 +588,15 @@ elif opcion_menu == "📷 Lector de Tickets IA":
         if 'resultado_json_ticket' in st.session_state:
             datos = st.session_state['resultado_json_ticket']
             c1, c2 = st.columns(2)
-            with c1: super_det = st.selectbox("Supermercado:", LISTA_SUPERS, index=LISTA_SUPERS.index(datos['supermercado']) if datos['supermercado'] in LISTA_SUPERS else 0)
-            with c2: pago_det = st.selectbox("Pago:", ["Efectivo", "Tarjeta/PayPal"], index=0 if datos['metodo_pago'] == "Efectivo" else 1)
+            with c1: super_det = st.selectbox("Supermercado:", LISTA_SUPERS, index=LISTA_SUPERS.index(datos.get('supermercado', 'Otros')) if datos.get('supermercado', 'Otros') in LISTA_SUPERS else 0)
+            with c2: pago_det = st.selectbox("Pago:", ["Efectivo", "Tarjeta/PayPal"], index=0 if datos.get('metodo_pago', 'Tarjeta/PayPal') == "Efectivo" else 1)
             
             c_l, c_r = st.columns(2)
             with c_l:
-                df_desp = pd.DataFrame(datos['articulos_despensa'])
+                df_desp = pd.DataFrame(datos.get('articulos_despensa', []))
                 if not df_desp.empty: st.dataframe(df_desp, use_container_width=True)
             with c_r:
-                df_hogar = pd.DataFrame(datos['gastos_hogar'])
+                df_hogar = pd.DataFrame(datos.get('gastos_hogar', []))
                 if not df_hogar.empty: st.dataframe(df_hogar, use_container_width=True)
                 
             if st.button("🔨 Inyectar Todo al Sistema"):
@@ -597,16 +604,25 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                 cursor = conexion.cursor()
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 
-                for item in datos['articulos_despensa']:
+                # Extracción segura mediante .get() para evitar KeyErrors
+                for item in datos.get('articulos_despensa', []):
+                    producto = item.get('producto', 'Alimento sin clasificar').lower().strip()
+                    unidades = item.get('unidades', 1)
+                    peso = item.get('peso_kg', 1.0)
+                    precio = item.get('precio_unitario', 0.0)
+                    
                     cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)", 
-                                   (item['producto'].lower().strip(), super_det, item['unidades'], item['peso_kg'], item['precio_unitario'], fecha_actual))
+                                   (producto, super_det, unidades, peso, precio, fecha_actual))
                     cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
-                                   (fecha_actual, f"Alimento: {item['producto']}", item['unidades'] * item['precio_unitario'], pago_det))
+                                   (fecha_actual, f"Alimento: {producto}", unidades * precio, pago_det))
                 
-                for gasto in datos['gastos_hogar']:
-                    cursor.execute("INSERT INTO utensilios (nombre) VALUES (?)", (gasto['concepto'].capitalize(),))
+                for gasto in datos.get('gastos_hogar', []):
+                    concepto_hogar = gasto.get('concepto', 'Utensilio desconocido').capitalize()
+                    precio_total_hogar = gasto.get('precio_total', 0.0)
+                    
+                    cursor.execute("INSERT INTO utensilios (nombre) VALUES (?)", (concepto_hogar,))
                     cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
-                                   (fecha_actual, f"Bazar/Utensilio: {gasto['concepto']}", gasto['precio_total'], pago_det))
+                                   (fecha_actual, f"Bazar/Utensilio: {concepto_hogar}", precio_total_hogar, pago_det))
                 
                 conexion.commit()
                 conexion.close()
