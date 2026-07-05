@@ -75,7 +75,6 @@ def inicializar_base_datos():
         monto_total REAL NOT NULL, meses_totales INTEGER NOT NULL, meses_pagados INTEGER NOT NULL DEFAULT 0
     )""")
     
-    # Parche de migración para utensilios (Hogar)
     try:
         cursor.execute("SELECT precio_unitario FROM utensilios LIMIT 1")
     except sqlite3.OperationalError:
@@ -93,15 +92,20 @@ def inicializar_base_datos():
         id INTEGER PRIMARY KEY AUTOINCREMENT, producto TEXT NOT NULL, supermercado_recomendado TEXT NOT NULL
     )""")
 
-    # --- TABLA CONFIGURACIÓN COCHE ---
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS configuracion_coche (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         letra_mensual REAL NOT NULL DEFAULT 0.0,
         seguro_mensual REAL NOT NULL DEFAULT 0.0
     )""")
-    # Inyectamos una fila por defecto para que la pestaña no dé error al arrancar
     cursor.execute("INSERT OR IGNORE INTO configuracion_coche (id, letra_mensual, seguro_mensual) VALUES (1, 0.0, 0.0)")
+
+    # NUEVA TABLA: PREVISIONES ANUALES
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS previsiones_anuales (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, concepto TEXT NOT NULL UNIQUE,
+        monto_total REAL NOT NULL, mes_objetivo INTEGER NOT NULL
+    )""")
 
     conexion.commit()
     conexion.close()
@@ -156,14 +160,19 @@ def obtener_totales_sistema():
     cursor = conexion.cursor()
     cursor.execute("SELECT monto_total, meses_totales FROM compras_plazos WHERE meses_pagados < meses_totales")
     total_cuotas_plazos = sum(row[0] / row[1] for row in cursor.fetchall())
+    
+    # CÁLCULO DE PROVISIONES (Fondos de Amortización Mensual)
+    cursor.execute("SELECT SUM(monto_total / 12.0) FROM previsiones_anuales")
+    total_provisiones_mes = cursor.fetchone()[0] or 0.0
+
     conexion.close()
     
     saldo_b = ingresos_fijos + extras_banco - gastos_tarjeta
     saldo_e = extras_efectivo - gastos_efectivo
     
-    return saldo_b, saldo_e, extras_banco, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos, inmovilizado_comida, inmovilizado_hogar
+    return saldo_b, saldo_e, extras_banco, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos, inmovilizado_comida, inmovilizado_hogar, total_provisiones_mes
 
-saldo_banco, saldo_efectivo, bizums_bloqueados, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos, inmovilizado_comida, inmovilizado_hogar = obtener_totales_sistema()
+saldo_banco, saldo_efectivo, bizums_bloqueados, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos, inmovilizado_comida, inmovilizado_hogar, total_provisiones_mes = obtener_totales_sistema()
 
 def registrar_movimiento(concepto, monto, tipo, metodo, subcuenta='N/A'):
     conexion = sqlite3.connect(DB_PATH, timeout=10)
@@ -198,8 +207,9 @@ opcion_menu = st.sidebar.radio("Ir a:", [
     "🛒 Lista de la Compra",
     "🔄 Gastos Recurrentes", 
     "💳 Compras a Plazos", 
+    "🗓️ Previsiones Anuales", 
     "🔮 Previsiones y Proyectos", 
-    "🚗 Mi Coche",                  # <--- NUEVA PESTAÑA AQUÍ
+    "🚗 Mi Coche",
     "📷 Lector de Tickets IA",
     "⚙️ Configuración y Arranque"
 ])
@@ -214,7 +224,8 @@ if opcion_menu == "💵 Control de Caja":
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1: st.metric(label="💳 Bolsa Única", value=f"{saldo_banco:,.2f} €")
     with col2: st.metric(label="💵 Hucha Efectivo", value=f"{saldo_efectivo:,.2f} €")
-    with col3: st.metric(label="🚨 Excepcionales", value=f"{excepcionales:,.2f} €")
+    # Este es el nuevo indicador de provisiones que pediste
+    with col3: st.metric(label="🛡️ Colchón Provisiones", value=f"{total_provisiones_mes:,.2f} €", help="Dinero de tu Bolsa Única que NO debes tocar este mes para poder pagar seguros/IBI a futuro.")
     with col4: st.metric(label="📦 Stock Comida", value=f"{inmovilizado_comida:,.2f} €")
     with col5: st.metric(label="🧴 Stock Hogar", value=f"{inmovilizado_hogar:,.2f} €")
     
@@ -319,7 +330,7 @@ if opcion_menu == "💵 Control de Caja":
             elif tipo == 'Ingreso Extra':
                 if sub == 'Extra-Banco': running_banco += monto
                 elif sub == 'Extra-Efectivo': running_hucha += monto
-            elif tipo.startswith('Gasto') or tipo in ['Gasto Habitual', 'Gasto Excepcional'] or tipo in ['Alimentación', 'Hogar']:
+            elif tipo.startswith('Gasto') or tipo in ['Gasto Habitual', 'Gasto Excepcional'] or tipo in ['Alimentación', 'Hogar', 'Gasto Coche']:
                 if pago == 'Tarjeta/PayPal': running_banco -= monto
                 elif pago == 'Efectivo': running_hucha -= monto
             saldos_registro[m_id] = (running_banco, running_hucha)
@@ -327,7 +338,6 @@ if opcion_menu == "💵 Control de Caja":
         for index, fila in df_movimientos.iterrows():
             m_id, m_fecha, m_concepto, m_monto, m_tipo, m_pago, m_sub = fila['id'], fila['fecha'], fila['concepto'], fila['monto'], fila['tipo_ingreso_gasto'], fila['metodo_pago'], fila['subcuenta_extra']
             
-            # Ocultamos los ingresos fantasma del saldo inicial
             if m_concepto.startswith("Saldo Inicial:"):
                 continue
                 
@@ -355,7 +365,6 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
         
     with st.form("form_despensa_manual"):
         st.subheader("➕ Añadir stock manual (Sin registrar pago)")
-        st.caption("Usa esto para productos que ya tenías en casa o regalos sin coste.")
         col_d1, col_d2, col_d3 = st.columns([4, 3, 3])
         with col_d1: nombre_d = st.text_input("Producto")
         with col_d2: super_d = st.selectbox("Origen", LISTA_SUPERS)
@@ -421,7 +430,6 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
     
     with st.form("form_utensilios_manual"):
         st.subheader("➕ Añadir stock manual (Sin registrar pago)")
-        st.caption("Usa esto para productos que ya tenías en casa o regalos sin coste.")
         col1, col2, col3 = st.columns([4, 3, 3])
         with col1: nombre_u = st.text_input("Producto")
         with col2: super_u = st.selectbox("Origen", LISTA_SUPERS)
@@ -610,17 +618,92 @@ elif opcion_menu == "💳 Compras a Plazos":
                 conexion.close()
                 st.rerun()
 
+# --- NUEVA PESTAÑA: PREVISIONES ANUALES ---
+elif opcion_menu == "🗓️ Previsiones Anuales":
+    st.title("🗓️ Gestor de Provisiones (Sinking Funds)")
+    st.info("💡 Crea 'huchas virtuales' para pagos grandes (Seguro, IBI, Taller). El sistema dividirá el coste entre 12 y apartará esa cuota cada mes para que el pago no te pille por sorpresa.")
+    
+    col_p1, col_p2 = st.columns([4, 6])
+    
+    with col_p1:
+        with st.form("form_nueva_prevision"):
+            st.subheader("➕ Nueva Previsión")
+            prev_concepto = st.text_input("Concepto (Ej. Seguro Coche, IBI)").strip()
+            prev_monto = st.number_input("Coste Anual Estimado (€)", min_value=10.0, step=50.0)
+            prev_mes = st.selectbox("Mes de Cobro", [1,2,3,4,5,6,7,8,9,10,11,12], format_func=lambda x: ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"][x-1])
+            
+            if st.form_submit_button("Crear Previsión Anual") and prev_concepto:
+                try:
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion.execute("INSERT INTO previsiones_anuales (concepto, monto_total, mes_objetivo) VALUES (?, ?, ?)", (prev_concepto, prev_monto, prev_mes))
+                    conexion.commit()
+                    conexion.close()
+                    st.success("Regla de provisión creada.")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("⚠️ Ya existe una previsión con ese nombre.")
+                    
+    with col_p2:
+        st.subheader("🛡️ Tus Provisiones Activas")
+        conexion = sqlite3.connect(DB_PATH, timeout=10)
+        df_prevs = pd.read_sql_query("SELECT * FROM previsiones_anuales ORDER BY mes_objetivo ASC", conexion)
+        conexion.close()
+        
+        meses_nombres = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+        
+        if not df_prevs.empty:
+            for index, fila in df_prevs.iterrows():
+                cuota_mes = fila['monto_total'] / 12.0
+                nombre_mes = meses_nombres[fila['mes_objetivo'] - 1]
+                
+                c_txt, c_pago, c_del = st.columns([6, 3, 1])
+                with c_txt:
+                    st.write(f"🎯 **{fila['concepto']}** | Objetivo: **{fila['monto_total']:,.2f} €** (en {nombre_mes})")
+                    st.caption(f"🛡️ Guardando: **{cuota_mes:.2f} € / mes**")
+                with c_pago:
+                    if st.button("💳 Registrar Pago", key=f"pagar_prev_{fila['id']}", help="Extrae el dinero del banco hoy, pero mantiene la regla de ahorro para el año que viene."):
+                        conexion = sqlite3.connect(DB_PATH, timeout=10)
+                        fecha_actual = datetime.now().strftime("%Y-%m-%d")
+                        conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+                                         (fecha_actual, f"Pago Previsión: {fila['concepto']}", fila['monto_total']))
+                        conexion.commit()
+                        conexion.close()
+                        st.success(f"Cobro de {fila['monto_total']}€ registrado en tu Banco.")
+                        st.rerun()
+                with c_del:
+                    if st.button("❌", key=f"del_prev_{fila['id']}"):
+                        conexion = sqlite3.connect(DB_PATH, timeout=10)
+                        conexion.execute("DELETE FROM previsiones_anuales WHERE id = ?", (fila['id'],))
+                        conexion.commit()
+                        conexion.close()
+                        st.rerun()
+                st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
+        else:
+            st.info("No tienes gastos anuales previstos. ¡Configura tu seguro o impuestos aquí!")
+
 elif opcion_menu == "🔮 Previsiones y Proyectos":
     st.title("🔮 Consultor de Viabilidad")
-    col_p1, col_p2 = st.columns(2)
+    st.caption("Esta herramienta te dice cuánto dinero libre tienes realmente, tras apartar todo lo necesario para vivir, pagar tus deudas y tus seguros futuros.")
     
-    with col_p1: sueldo_base = st.number_input("Nómina Fija (€)", min_value=0.0, value=1300.0)
-    with col_p2: gastos_fijos_est = st.number_input("Suministros Variables", min_value=0.0, value=150.0)
+    col_p1, col_p2 = st.columns(2)
+    with col_p1: sueldo_base = st.number_input("Nómina Fija Mensual (€)", min_value=0.0, value=1300.0)
+    with col_p2: gastos_fijos_est = st.number_input("Suministros (Agua, Luz, Internet, etc)", min_value=0.0, value=150.0)
         
-    capacidad_ahorroador_teorica = sueldo_base - gastos_fijos_est - total_recurrentes - total_cuotas_plazos
-    st.info(f"💡 Capacidad de ahorro libre: **{capacidad_ahorroador_teorica:.2f} € / mes**.")
+    # LA MATEMÁTICA DEFINITIVA DEL AHORRO LIBRE
+    capacidad_ahorroador_teorica = sueldo_base - gastos_fijos_est - total_recurrentes - total_cuotas_plazos - total_provisiones_mes
+    
+    st.success(f"### 💰 AHORRO LIBRE REAL: {capacidad_ahorroador_teorica:,.2f} € / mes")
+    
+    st.markdown("**(Desglose Analítico):**")
+    st.markdown(f"➕ Nómina: `{sueldo_base:,.2f} €`")
+    st.markdown(f"➖ Suministros (Agua/Luz): `{gastos_fijos_est:,.2f} €`")
+    st.markdown(f"➖ Recurrentes (Suscripciones/Letras): `{total_recurrentes:,.2f} €`")
+    st.markdown(f"➖ Cuotas de Plazos: `{total_cuotas_plazos:,.2f} €`")
+    st.markdown(f"➖ Provisiones (Colchón para Seguros/Taller): `{total_provisiones_mes:,.2f} €`")
+    st.markdown("---")
     
     with st.form("form_proyecto"):
+        st.subheader("🚀 Lanzar un Proyecto Finalista (Viajes, Caprichos)")
         c1, c2, c3 = st.columns(3)
         with c1: proj_name = st.text_input("Proyecto")
         with c2: proj_target = st.number_input("Objetivo (€)", min_value=10.0)
@@ -676,51 +759,45 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
 elif opcion_menu == "🚗 Mi Coche":
     st.title("🚗 Dashboard del Vehículo")
     
-    # 1. Leer fijos del coche (Letra y Seguro)
+    # Lectura de la configuración fija del coche (sin incluir el seguro, que ahora va en Previsiones)
     conexion = sqlite3.connect(DB_PATH, timeout=10)
-    config_coche = pd.read_sql_query("SELECT letra_mensual, seguro_mensual FROM configuracion_coche WHERE id=1", conexion)
+    config_coche = pd.read_sql_query("SELECT letra_mensual FROM configuracion_coche WHERE id=1", conexion)
     letra_val = config_coche.iloc[0]['letra_mensual'] if not config_coche.empty else 0.0
-    seguro_val = config_coche.iloc[0]['seguro_mensual'] if not config_coche.empty else 0.0
     
-    # 2. Leer gastos variables de ESTE MES (Gasolina, limpieza, etc.)
     mes_actual = datetime.now().strftime("%Y-%m")
     variables_df = pd.read_sql_query("SELECT * FROM movimientos_caja WHERE tipo_ingreso_gasto = 'Gasto Coche' AND fecha LIKE ?", conexion, params=(f"{mes_actual}%",))
     conexion.close()
     
     gasto_var_total = variables_df['monto'].sum() if not variables_df.empty else 0.0
-    coste_total_mes = letra_val + seguro_val + gasto_var_total
+    coste_total_mes = letra_val + gasto_var_total
     
-    # --- MÉTRICAS SUPERIORES ---
-    st.info("💡 **TCO (Coste Total de Propiedad):** Esta es la radiografía real de lo que te cuesta mantener el vehículo este mes.")
-    col1, col2, col3, col4 = st.columns(4)
+    st.info("💡 **TCO Mensual (Coste Total de Propiedad):** Esta es la radiografía de tu letra y consumo este mes. (Los seguros anuales se gestionan ahora desde '🗓️ Previsiones Anuales').")
+    col1, col2, col3 = st.columns(3)
     with col1: st.metric("🔥 Coste Total este Mes", f"{coste_total_mes:,.2f} €")
     with col2: st.metric("🏦 Letra (Fijo)", f"{letra_val:,.2f} €")
-    with col3: st.metric("🛡️ Seguro (Prorrateo Mes)", f"{seguro_val:,.2f} €")
-    with col4: st.metric("⛽ Variables (Gas, Lavado)", f"{gasto_var_total:,.2f} €")
+    with col3: st.metric("⛽ Variables (Gas, Lavado)", f"{gasto_var_total:,.2f} €")
     
     st.markdown("---")
-    
     col_izq, col_der = st.columns(2)
     
     with col_izq:
         st.header("⚙️ Configuración Fija")
         with st.form("form_coche_fijos"):
-            st.caption("Actualiza tu letra y prorratea tu seguro (Ej: si pagas 600€ al año, pon 50€/mes).")
+            st.caption("Ajusta tu letra mensual para el cálculo estadístico.")
             nueva_letra = st.number_input("Letra del Coche (€/mes)", min_value=0.0, step=10.0, value=float(letra_val))
-            nuevo_seguro = st.number_input("Seguro Mensualizado (€/mes)", min_value=0.0, step=5.0, value=float(seguro_val))
             
-            if st.form_submit_button("Guardar Parámetros"):
+            if st.form_submit_button("Guardar Letra"):
                 conexion = sqlite3.connect(DB_PATH, timeout=10)
-                conexion.execute("UPDATE configuracion_coche SET letra_mensual=?, seguro_mensual=? WHERE id=1", (nueva_letra, nuevo_seguro))
+                conexion.execute("UPDATE configuracion_coche SET letra_mensual=? WHERE id=1", (nueva_letra,))
                 conexion.commit()
                 conexion.close()
-                st.success("Configuración del coche actualizada.")
+                st.success("Letra del coche actualizada.")
                 st.rerun()
                 
     with col_der:
         st.header("⛽ Añadir Gasto Variable")
         with st.form("form_coche_var"):
-            st.caption("Estos gastos sí se restarán inmediatamente de tu Banco o Efectivo.")
+            st.caption("Estos gastos se restarán inmediatamente de tu Banco o Efectivo.")
             tipo_gasto_coche = st.selectbox("Categoría", ["Gasolina", "Lavadero / Limpieza", "Taller / Mantenimiento", "Peaje / Parking", "Otro"])
             monto_coche = st.number_input("Importe (€)", min_value=0.0, step=5.0)
             metodo_coche = st.selectbox("Pago", ["Tarjeta/PayPal", "Efectivo"])
@@ -728,7 +805,6 @@ elif opcion_menu == "🚗 Mi Coche":
             if st.form_submit_button("Registrar Gasto") and monto_coche > 0:
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 conexion = sqlite3.connect(DB_PATH, timeout=10)
-                # Inyectamos con la etiqueta 'Gasto Coche' para que la Bolsa Única lo detecte y lo reste automáticamente
                 conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Coche', ?)",
                                (fecha_actual, f"Coche: {tipo_gasto_coche}", monto_coche, metodo_coche))
                 conexion.commit()
@@ -740,8 +816,7 @@ elif opcion_menu == "🚗 Mi Coche":
     if not variables_df.empty:
         for _, row in variables_df.iloc[::-1].iterrows():
             c1, c2 = st.columns([9, 1])
-            with c1: 
-                st.write(f"📅 **{row['fecha']}** | {row['concepto']} -> **{row['monto']:,.2f} €** ({row['metodo_pago']})")
+            with c1: st.write(f"📅 **{row['fecha']}** | {row['concepto']} -> **{row['monto']:,.2f} €** ({row['metodo_pago']})")
             with c2:
                 if st.button("❌", key=f"del_coche_{row['id']}"):
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
