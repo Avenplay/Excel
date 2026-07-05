@@ -7,6 +7,29 @@ import json
 import os
 from google import genai
 
+# --- BLOQUE DE SEGURIDAD (AÑADIR AL PRINCIPIO) ---
+def check_password():
+    """Devuelve True si la contraseña es correcta."""
+    def password_entered():
+        if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("Introduce la contraseña para acceder:", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.text_input("Contraseña incorrecta. Inténtalo de nuevo:", type="password", on_change=password_entered, key="password")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()  # Detiene la carga de la app si no hay clave correcta
+# --------------------------------------------------
+
 # CONFIGURACIÓN DE LA PÁGINA
 st.set_page_config(page_title="Copiloto Financiero Doméstico", layout="wide")
 
