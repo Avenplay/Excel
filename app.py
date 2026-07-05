@@ -51,10 +51,6 @@ def inicializar_base_datos():
         unidades_actuales INTEGER NOT NULL DEFAULT 0, peso_neto_kg REAL NOT NULL, precio_unitario REAL NOT NULL,
         fecha_compra TEXT
     )""")
-    try: 
-        cursor.execute("ALTER TABLE despensa ADD COLUMN fecha_compra TEXT")
-    except: 
-        pass
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS consumo_alimentos (
@@ -79,9 +75,12 @@ def inicializar_base_datos():
         monto_total REAL NOT NULL, meses_totales INTEGER NOT NULL, meses_pagados INTEGER NOT NULL DEFAULT 0
     )""")
     
+    # NUEVA ESTRUCTURA: Clónica a la despensa para auditar valor
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS utensilios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL
+        id INTEGER PRIMARY KEY AUTOINCREMENT, producto_generico TEXT NOT NULL, supermercado TEXT NOT NULL,
+        unidades_actuales INTEGER NOT NULL DEFAULT 0, peso_neto_kg REAL NOT NULL, precio_unitario REAL NOT NULL,
+        fecha_compra TEXT
     )""")
     
     cursor.execute("""
@@ -136,6 +135,10 @@ def obtener_totales_sistema():
     mermas_comida = pd.read_sql_query("SELECT SUM(coste_estimado) FROM consumo_alimentos WHERE estado='Tirado'", conexion).iloc[0,0] or 0.0
     total_recurrentes = pd.read_sql_query("SELECT SUM(monto) FROM gastos_recurrentes", conexion).iloc[0,0] or 0.0
     
+    # NUEVOS CÁLCULOS: Valor inmovilizado en inventarios
+    inmovilizado_comida = pd.read_sql_query("SELECT SUM(unidades_actuales * precio_unitario) FROM despensa", conexion).iloc[0,0] or 0.0
+    inmovilizado_hogar = pd.read_sql_query("SELECT SUM(unidades_actuales * precio_unitario) FROM utensilios", conexion).iloc[0,0] or 0.0
+
     cursor = conexion.cursor()
     cursor.execute("SELECT monto_total, meses_totales FROM compras_plazos WHERE meses_pagados < meses_totales")
     total_cuotas_plazos = sum(row[0] / row[1] for row in cursor.fetchall())
@@ -144,9 +147,9 @@ def obtener_totales_sistema():
     saldo_b = ingresos_fijos + extras_banco - gastos_tarjeta
     saldo_e = extras_efectivo - gastos_efectivo
     
-    return saldo_b, saldo_e, extras_banco, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos
+    return saldo_b, saldo_e, extras_banco, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos, inmovilizado_comida, inmovilizado_hogar
 
-saldo_banco, saldo_efectivo, bizums_bloqueados, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos = obtener_totales_sistema()
+saldo_banco, saldo_efectivo, bizums_bloqueados, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos, inmovilizado_comida, inmovilizado_hogar = obtener_totales_sistema()
 
 def registrar_movimiento(concepto, monto, tipo, metodo, subcuenta='N/A'):
     conexion = sqlite3.connect(DB_PATH, timeout=10)
@@ -192,25 +195,91 @@ if opcion_menu == "💵 Control de Caja":
     st.title("🧠 Tu Copiloto Financiero Inteligente")
     st.markdown("---")
     
-    col1, col2, col3, col4 = st.columns(4)
-    with col1: st.metric(label="💳 Bolsa Única (Banco)", value=f"{saldo_banco:,.2f} €")
-    with col2: st.metric(label="💵 Hucha Efectivo (Físico)", value=f"{saldo_efectivo:,.2f} €")
-    with col3: st.metric(label="🔒 Extras en Banco (Bloqueado)", value=f"{bizums_bloqueados:,.2f} €")
-    with col4: st.metric(label="🚨 Gastos Excepcionales", value=f"{excepcionales:,.2f} €")
+    # Añadimos las métricas de Inmovilizado para ver cuánto dinero hay convertido en bienes
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1: st.metric(label="💳 Bolsa Única", value=f"{saldo_banco:,.2f} €")
+    with col2: st.metric(label="💵 Hucha Efectivo", value=f"{saldo_efectivo:,.2f} €")
+    with col3: st.metric(label="🚨 Excepcionales", value=f"{excepcionales:,.2f} €")
+    with col4: st.metric(label="📦 Stock Comida", value=f"{inmovilizado_comida:,.2f} €")
+    with col5: st.metric(label="🧴 Stock Hogar", value=f"{inmovilizado_hogar:,.2f} €")
     
     st.markdown("---")
     col_l, col_r = st.columns(2)
+    
     with col_l:
         st.header("🛒 Registrar Gasto Manual")
-        with st.form("form_gasto"):
-            concepto_g = st.text_input("Concepto")
-            monto_g = st.number_input("Importe (€)", min_value=0.0, step=0.50)
-            tipo_g = st.selectbox("Tipo", ["Gasto Habitual", "Gasto Excepcional"])
-            metodo_g = st.selectbox("Pago", ["Tarjeta/PayPal", "Efectivo"])
-            if st.form_submit_button("Guardar Gasto") and concepto_g and monto_g > 0:
-                registrar_movimiento(concepto_g, monto_g, tipo_g, metodo_g)
-                st.rerun()
+        # El selector FUERA del form para que reaccione instantáneamente
+        categoria_gasto = st.selectbox("Categoría del Gasto", ["Alimentación", "Hogar", "Gastos Fijos", "Gasto Excepcional"])
+        
+        # FLUJO 1: COMPRAS QUE GENERAN INVENTARIO (Comida o Hogar)
+        if categoria_gasto in ["Alimentación", "Hogar"]:
+            with st.form("form_gasto_inventario"):
+                st.caption("Al guardar, el importe se restará del banco y los artículos irán a su despensa correspondiente.")
+                concepto_g = st.text_input("Producto / Concepto")
+                c_a, c_b = st.columns(2)
+                with c_a:
+                    monto_g = st.number_input("Importe Total (€)", min_value=0.0, step=0.50)
+                    unidades_g = st.number_input("Unidades Compradas", min_value=1, step=1)
+                with c_b:
+                    super_g = st.selectbox("Supermercado", LISTA_SUPERS)
+                    peso_g = st.number_input("Peso/L por ud.", min_value=0.01, value=1.0) if categoria_gasto == "Alimentación" else 1.0
                 
+                metodo_g = st.selectbox("Pago", ["Tarjeta/PayPal", "Efectivo"])
+                
+                if st.form_submit_button("Guardar Gasto y Añadir a Stock") and concepto_g and monto_g > 0:
+                    precio_uni = monto_g / unidades_g
+                    fecha_actual = datetime.now().strftime("%Y-%m-%d")
+                    tabla_destino = "despensa" if categoria_gasto == "Alimentación" else "utensilios"
+                    
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    cursor = conexion.cursor()
+                    
+                    # Asiento 1: Restar el dinero del libro mayor
+                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, ?, ?)", 
+                                   (fecha_actual, f"{categoria_gasto}: {concepto_g}", monto_g, "Gasto Habitual", metodo_g))
+                    
+                    # Asiento 2: Inyectar en el inventario
+                    cursor.execute(f"INSERT INTO {tabla_destino} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)", 
+                                   (concepto_g.lower().strip(), super_g, unidades_g, peso_g, precio_uni, fecha_actual))
+                    
+                    conexion.commit()
+                    conexion.close()
+                    st.rerun()
+
+        # FLUJO 2: GASTOS FIJOS (Suscripciones, recibos)
+        elif categoria_gasto == "Gastos Fijos":
+            with st.form("form_gasto_fijo"):
+                st.caption("Al guardar, se cobrará hoy y se añadirá a la pestaña 'Gastos Recurrentes' para el futuro.")
+                concepto_g = st.text_input("Concepto del Gasto Fijo")
+                monto_g = st.number_input("Importe (€)", min_value=0.0, step=0.50)
+                metodo_g = st.selectbox("Pago", ["Tarjeta/PayPal", "Efectivo"])
+                
+                if st.form_submit_button("Guardar Gasto Fijo") and concepto_g and monto_g > 0:
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    cursor = conexion.cursor()
+                    try:
+                        cursor.execute("INSERT INTO gastos_recurrentes (nombre_gasto, monto) VALUES (?, ?)", (concepto_g, monto_g))
+                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, ?, ?)", 
+                                       (datetime.now().strftime("%Y-%m-%d"), f"Fijo Automático: {concepto_g}", monto_g, "Gasto Habitual", metodo_g))
+                        conexion.commit()
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("⚠️ Ya existe un gasto fijo recurrente con ese nombre exacto.")
+                    finally:
+                        conexion.close()
+
+        # FLUJO 3: GASTOS EXCEPCIONALES (Ocio, imprevistos)
+        else:
+            with st.form("form_gasto_excepcional"):
+                concepto_g = st.text_input("Concepto (Ej. Taller, Cena)")
+                monto_g = st.number_input("Importe (€)", min_value=0.0, step=0.50)
+                metodo_g = st.selectbox("Pago", ["Tarjeta/PayPal", "Efectivo"])
+                
+                if st.form_submit_button("Guardar Gasto Excepcional") and concepto_g and monto_g > 0:
+                    registrar_movimiento(concepto_g, monto_g, "Gasto Excepcional", metodo_g)
+                    st.rerun()
+
+    # --- LA COLUMNA DERECHA Y EL HISTORIAL SE MANTIENEN INTACTOS ---            
     with col_r:
         st.header("💰 Registrar Entrada de Dinero")
         with st.form("form_ingreso"):
@@ -242,7 +311,7 @@ if opcion_menu == "💵 Control de Caja":
             elif tipo == 'Ingreso Extra':
                 if sub == 'Extra-Banco': running_banco += monto
                 elif sub == 'Extra-Efectivo': running_hucha += monto
-            elif tipo.startswith('Gasto') or tipo in ['Gasto Habitual', 'Gasto Excepcional']:
+            elif tipo.startswith('Gasto') or tipo in ['Gasto Habitual', 'Gasto Excepcional'] or tipo in ['Alimentación', 'Hogar']:
                 if pago == 'Tarjeta/PayPal': running_banco -= monto
                 elif pago == 'Efectivo': running_hucha -= monto
             saldos_registro[m_id] = (running_banco, running_hucha)
@@ -306,49 +375,65 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
         st.info("No hay alimentos en la despensa.")
 
 elif opcion_menu == "🏠 Utensilios (Hogar)":
-    st.title("🏠 Inventario de Utensilios de Hogar")
+    st.title("🏠 Inventario de Utensilios y Limpieza")
     
-    with st.form("form_utensilios"):
-        col1, col2 = st.columns([8, 2])
-        with col1: nombre_u = st.text_input("Nombre del Utensilio")
-        with col2: 
-            st.write("")
-            submit_u = st.form_submit_button("Añadir")
+    # Mostramos la métrica del dinero que tienes invertido aquí
+    st.metric(label="🧴 Valor Inmovilizado en Hogar", value=f"{inmovilizado_hogar:,.2f} €")
+    
+    with st.form("form_utensilios_manual"):
+        st.subheader("➕ Añadir stock manual (Sin registrar pago)")
+        st.caption("Usa esto para productos que ya tenías en casa o regalos sin coste.")
+        col1, col2, col3 = st.columns([4, 3, 3])
+        with col1: nombre_u = st.text_input("Producto")
+        with col2: super_u = st.selectbox("Origen", LISTA_SUPERS)
+        with col3:
+            unidades_u = st.number_input("Unidades", min_value=1, step=1)
+            precio_u = st.number_input("Precio/Ud aprox (€)", min_value=0.0, step=0.1)
             
-        if submit_u and nombre_u:
+        if st.form_submit_button("Añadir al Inventario") and nombre_u:
             conexion = sqlite3.connect(DB_PATH, timeout=10)
-            conexion.execute("INSERT INTO utensilios (nombre) VALUES (?)", (nombre_u.strip().capitalize(),))
+            # Insertamos con peso_neto 1.0 por defecto ya que en hogar rara vez calculamos el precio/kilo
+            conexion.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, 1.0, ?, ?)",
+                           (nombre_u.strip().lower(), super_u, unidades_u, precio_u, datetime.now().strftime("%Y-%m-%d")))
             conexion.commit()
             conexion.close()
             st.rerun()
             
     st.markdown("---")
+    st.header("📦 Existencias (Hogar)")
     conexion = sqlite3.connect(DB_PATH, timeout=10)
-    utensilios = pd.read_sql_query("SELECT * FROM utensilios", conexion)
+    utensilios = pd.read_sql_query("SELECT * FROM utensilios WHERE unidades_actuales > 0", conexion)
     conexion.close()
     
     if not utensilios.empty:
-        for index, row in utensilios.iterrows():
+        for index, fila in utensilios.iterrows():
+            id_prod = fila['id']
+            nombre = fila['producto_generico'].capitalize()
+            superm = fila['supermercado']
+            cant = fila['unidades_actuales']
+            precio = fila['precio_unitario']
+            
             c1, c2, c3 = st.columns([6, 2, 2])
-            with c1: st.write(f"🔹 **{row['nombre']}**")
+            with c1: st.write(f"🔹 **{nombre}** ({superm}) — **{cant} uds** | **{precio} €/ud**")
             with c2:
-                if st.button("🛒 Gastado (A Lista)", key=f"ut_lista_{row['id']}"):
-                    añadir_a_lista_compra(row['nombre'], "Sección Bazar/Hogar")
+                if st.button("🧹 Gastar 1 ud", key=f"uso_hogar_{id_prod}"):
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("DELETE FROM utensilios WHERE id = ?", (row['id'],))
+                    conexion.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
+                    if cant - 1 == 0: añadir_a_lista_compra(nombre.lower(), "Sección Hogar")
                     conexion.commit()
                     conexion.close()
                     st.rerun()
             with c3:
-                if st.button("🗑️ Borrar", key=f"ut_del_{row['id']}"):
+                if st.button("🗑️ Desechar", key=f"tir_hogar_{id_prod}"):
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("DELETE FROM utensilios WHERE id = ?", (row['id'],))
+                    conexion.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
+                    if cant - 1 == 0: añadir_a_lista_compra(nombre.lower(), "Sección Hogar")
                     conexion.commit()
                     conexion.close()
                     st.rerun()
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
-        st.info("No tienes utensilios registrados.")
+        st.info("No tienes utensilios o productos de limpieza registrados.")
 
 elif opcion_menu == "🛒 Lista de la Compra":
     st.title("🛒 Lista de la Compra Inteligente")
