@@ -45,12 +45,19 @@ def inicializar_base_datos():
         monto REAL NOT NULL, tipo_ingreso_gasto TEXT, metodo_pago TEXT, subcuenta_extra TEXT DEFAULT 'N/A'
     )""")
     
+   # (Sustituye la tabla despensa dentro de inicializar_base_datos)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS despensa (
         id INTEGER PRIMARY KEY AUTOINCREMENT, producto_generico TEXT NOT NULL, supermercado TEXT NOT NULL,
         unidades_actuales INTEGER NOT NULL DEFAULT 0, peso_neto_kg REAL NOT NULL, precio_unitario REAL NOT NULL,
-        fecha_compra TEXT
+        fecha_compra TEXT, ubicacion TEXT DEFAULT 'Armario'
     )""")
+    
+    # Parche para actualizar las bases de datos antiguas sin perder tu comida
+    try:
+        cursor.execute("ALTER TABLE despensa ADD COLUMN ubicacion TEXT DEFAULT 'Armario'")
+    except sqlite3.OperationalError:
+        pass
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS consumo_alimentos (
@@ -372,17 +379,20 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
     with st.form("form_despensa_manual"):
         st.subheader("➕ Añadir stock manual (Sin registrar pago)")
         col_d1, col_d2, col_d3 = st.columns([4, 3, 3])
-        with col_d1: nombre_d = st.text_input("Producto")
-        with col_d2: super_d = st.selectbox("Origen", LISTA_SUPERS)
-        with col_d3:
+        with col_d1: 
+            nombre_d = st.text_input("Producto")
+            ubicacion_d = st.selectbox("Ubicación", ["Armario", "Nevera", "Congelador"])
+        with col_d2: 
+            super_d = st.selectbox("Origen", LISTA_SUPERS)
             unidades_d = st.number_input("Unidades", min_value=1, step=1)
+        with col_d3:
             peso_d = st.number_input("Peso/L por ud.", min_value=0.01, value=1.0)
             precio_d = st.number_input("Precio/Ud aprox (€)", min_value=0.0, step=0.1)
             
         if st.form_submit_button("Añadir al Inventario") and nombre_d:
             conexion = sqlite3.connect(DB_PATH, timeout=10)
-            conexion.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)",
-                           (nombre_d.strip().lower(), super_d, unidades_d, peso_d, precio_d, datetime.now().strftime("%Y-%m-%d")))
+            conexion.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                           (nombre_d.strip().lower(), super_d, unidades_d, peso_d, precio_d, datetime.now().strftime("%Y-%m-%d"), ubicacion_d))
             conexion.commit()
             conexion.close()
             st.rerun()
@@ -395,13 +405,32 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
     
     if not df_stock.empty:
         df_stock['Precio_Kg_L'] = (df_stock['precio_unitario'] / df_stock['peso_neto_kg']).round(2)
+        
+        # Diccionario visual para la tabla
+        iconos_ubi = {"Armario": "🚪", "Nevera": "🧊", "Congelador": "❄️"}
+        
         for index, fila in df_stock.iterrows():
             id_prod, nombre, superm, cant, peso, precio, p_kg = fila['id'], fila['producto_generico'].capitalize(), fila['supermercado'], fila['unidades_actuales'], fila['peso_neto_kg'], fila['precio_unitario'], fila['Precio_Kg_L']
-            c_info, c_btn1, c_btn2 = st.columns([6, 2, 2])
-            with c_info: st.write(f"🟢 **{nombre}** ({superm}) — **{cant} uds** | {peso} Kg/L | {precio}€/ud (**{p_kg} €/Kg**)")
+            # Evita errores si hay comida vieja sin ubicación
+            ubi_actual = fila.get('ubicacion') if pd.notna(fila.get('ubicacion')) else "Armario"
             
+            c_info, c_ubi, c_btn1, c_btn2 = st.columns([4, 2, 2, 2])
+            with c_info: 
+                icono = iconos_ubi.get(ubi_actual, "📦")
+                st.write(f"{icono} **{nombre}** ({superm}) — **{cant} uds** | {peso} Kg/L | {precio}€/ud")
+                
+            with c_ubi:
+                # Selector mágico: si lo cambias, guarda en base de datos al instante
+                nueva_ubi = st.selectbox("Lugar", ["Armario", "Nevera", "Congelador"], index=["Armario", "Nevera", "Congelador"].index(ubi_actual), key=f"ubi_{id_prod}", label_visibility="collapsed")
+                if nueva_ubi != ubi_actual:
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion.execute("UPDATE despensa SET ubicacion = ? WHERE id = ?", (nueva_ubi, id_prod))
+                    conexion.commit()
+                    conexion.close()
+                    st.rerun()
+                    
             with c_btn1:
-                if st.button(f"🍽️ Consumir 1 ud", key=f"con_{id_prod}"):
+                if st.button(f"🍽️ Consumir", key=f"con_{id_prod}"):
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Consumido')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
@@ -414,7 +443,7 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
                     st.rerun()
                     
             with c_btn2:
-                if st.button(f"🗑️ Tirar / Merma", key=f"tir_{id_prod}"):
+                if st.button(f"🗑️ Tirar", key=f"tir_{id_prod}"):
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
                     conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                     conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Tirado')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
@@ -1073,6 +1102,7 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
             st.caption("Carga artículos a coste 0.00 € y Origen 'Stock Inicial' para no alterar tus estadísticas financieras de consumo de este mes.")
             
             tipo_inv = st.radio("¿Dónde lo guardamos?", ["Despensa", "Hogar"], horizontal=True)
+            ubicacion_inv = st.selectbox("Si es Despensa, ¿en qué lugar?", ["Armario", "Nevera", "Congelador"])
             nombre_inv = st.text_input("Nombre del Producto (Ej. Leche, Papel Higiénico)")
             unidades_inv = st.number_input("Cantidad", min_value=1, step=1)
             
@@ -1080,8 +1110,12 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
                 tabla = "despensa" if tipo_inv == "Despensa" else "utensilios"
                 conexion = sqlite3.connect(DB_PATH, timeout=10)
                 
-                conexion.execute(f"INSERT INTO {tabla} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, 'Stock Inicial', ?, 1.0, 0.0, ?)",
-                               (nombre_inv.strip().lower(), unidades_inv, datetime.now().strftime("%Y-%m-%d")))
+                if tabla == "despensa":
+                    conexion.execute(f"INSERT INTO {tabla} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, 'Stock Inicial', ?, 1.0, 0.0, ?, ?)",
+                                   (nombre_inv.strip().lower(), unidades_inv, datetime.now().strftime("%Y-%m-%d"), ubicacion_inv))
+                else:
+                    conexion.execute(f"INSERT INTO {tabla} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, 'Stock Inicial', ?, 1.0, 0.0, ?)",
+                                   (nombre_inv.strip().lower(), unidades_inv, datetime.now().strftime("%Y-%m-%d")))
                 
                 conexion.commit()
                 conexion.close()
