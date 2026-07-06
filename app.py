@@ -1145,7 +1145,8 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
                 st.success(f"{unidades_inv}x {nombre_inv.capitalize()} añadidos a tu {tipo_inv}.")
                 st.rerun()
 
-st.markdown("---")
+    # Corrección aquí: ahora está alineado dentro del bloque "elif" de forma correcta
+    st.markdown("---")
     st.header("💣 3. Reset de Fábrica (Pase a Producción)")
     st.caption("Al pulsar este botón, la aplicación destruirá el archivo de la base de datos por completo y creará uno nuevo y virgen. ¡Úsalo solo para empezar de cero mañana!")
     
@@ -1162,4 +1163,3 @@ st.markdown("---")
             
         st.success("¡Base de datos vaporizada! La app se está reiniciando...")
         st.rerun()
-
