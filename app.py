@@ -377,22 +377,21 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
     with col2: st.metric("🗑️ Mermas / Tirado", f"{mermas_comida:,.2f} €")
         
     with st.form("form_despensa_manual"):
-        st.subheader("➕ Añadir stock manual (Sin registrar pago)")
-        col_d1, col_d2, col_d3 = st.columns([4, 3, 3])
+        st.subheader("➕ Añadir Regalo o Stock a Coste Cero")
+        st.caption("Usa esto para tuppers, regalos o comida que no afectará a tus gastos.")
+        col_d1, col_d2, col_d3 = st.columns(3)
         with col_d1: 
             nombre_d = st.text_input("Producto")
-            ubicacion_d = st.selectbox("Ubicación", ["Armario", "Nevera", "Congelador"])
         with col_d2: 
-            super_d = st.selectbox("Origen", LISTA_SUPERS)
-            unidades_d = st.number_input("Unidades", min_value=1, step=1)
+            ubicacion_d = st.selectbox("Ubicación", ["Armario", "Nevera", "Congelador"])
         with col_d3:
-            peso_d = st.number_input("Peso/L por ud.", min_value=0.01, value=1.0)
-            precio_d = st.number_input("Precio/Ud aprox (€)", min_value=0.0, step=0.1)
+            unidades_d = st.number_input("Unidades", min_value=1, step=1)
             
         if st.form_submit_button("Añadir al Inventario") and nombre_d:
             conexion = sqlite3.connect(DB_PATH, timeout=10)
-            conexion.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                           (nombre_d.strip().lower(), super_d, unidades_d, peso_d, precio_d, datetime.now().strftime("%Y-%m-%d"), ubicacion_d))
+            # Inyectamos origen 'Regalo/Sin Coste' y precio 0.0 para que no sume al consumirlo
+            conexion.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, 'Regalo/Sin Coste', ?, 1.0, 0.0, ?, ?)",
+                           (nombre_d.strip().lower(), unidades_d, datetime.now().strftime("%Y-%m-%d"), ubicacion_d))
             conexion.commit()
             conexion.close()
             st.rerun()
@@ -405,33 +404,34 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
     conexion.close()
     
     if not df_stock.empty:
-        # 1. Blindaje por si hay datos viejos sin ubicación
         if 'ubicacion' not in df_stock.columns:
             df_stock['ubicacion'] = 'Armario'
         else:
             df_stock['ubicacion'] = df_stock['ubicacion'].fillna("Armario")
             
-        # 2. EL NUEVO FILTRO VISUAL EN PANTALLA
         filtro_vista = st.radio("🔍 Filtrar por ubicación:", ["Mostrar Todo", "Armario", "Nevera", "Congelador"], horizontal=True)
-        
-        # 3. Recortamos la tabla de Pandas según lo que hayas pulsado
         df_filtrado = df_stock if filtro_vista == "Mostrar Todo" else df_stock[df_stock['ubicacion'] == filtro_vista]
 
         if df_filtrado.empty:
             st.info(f"Vaya, parece que no tienes ningún alimento en: {filtro_vista}.")
         else:
-            df_filtrado['Precio_Kg_L'] = (df_filtrado['precio_unitario'] / df_filtrado['peso_neto_kg']).round(2)
-            
             iconos_ubi = {"Armario": "🚪", "Nevera": "🧊", "Congelador": "❄️"}
             
             for index, fila in df_filtrado.iterrows():
-                id_prod, nombre, superm, cant, peso, precio, p_kg = fila['id'], fila['producto_generico'].capitalize(), fila['supermercado'], fila['unidades_actuales'], fila['peso_neto_kg'], fila['precio_unitario'], fila['Precio_Kg_L']
+                id_prod = fila['id']
+                nombre = fila['producto_generico'].capitalize()
+                superm = fila['supermercado']
+                cant = fila['unidades_actuales']
+                precio = fila['precio_unitario']
                 ubi_actual = fila['ubicacion']
                 
-                c_info, c_ubi, c_btn1, c_btn2 = st.columns([4, 2, 2, 2])
+                # Ajuste visual si es regalo o comprado
+                txt_precio = f" | {precio}€/ud" if precio > 0 else " | 🎁 Sin coste"
+                
+                c_info, c_ubi, c_btn1, c_btn2, c_btn3 = st.columns([3, 2, 1, 1, 1])
                 with c_info: 
                     icono = iconos_ubi.get(ubi_actual, "📦")
-                    st.write(f"{icono} **{nombre}** ({superm}) — **{cant} uds** | {peso} Kg/L | {precio}€/ud")
+                    st.write(f"{icono} **{nombre}** ({superm}) — **{cant} uds**{txt_precio}")
                     
                 with c_ubi:
                     nueva_ubi = st.selectbox("Lugar", ["Armario", "Nevera", "Congelador"], index=["Armario", "Nevera", "Congelador"].index(ubi_actual), key=f"ubi_{id_prod}", label_visibility="collapsed")
@@ -443,31 +443,41 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
                         st.rerun()
                         
                 with c_btn1:
-                    if st.button(f"🍽️ Consumir", key=f"con_{id_prod}"):
+                    if st.button(f"🍽️", key=f"con_{id_prod}", help="Consumir 1 ud"):
                         conexion = sqlite3.connect(DB_PATH, timeout=10)
                         conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                         conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Consumido')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
                         conexion.commit()
                         conexion.close()
                         
-                        if cant - 1 == 0: 
+                        if cant - 1 == 0 and precio > 0: 
                             mejor_super = obtener_mejor_super(nombre, tabla="despensa")
                             añadir_a_lista_compra(nombre.lower(), mejor_super)
                         st.rerun()
                         
                 with c_btn2:
-                    if st.button(f"🗑️ Tirar", key=f"tir_{id_prod}"):
+                    if st.button(f"🗑️", key=f"tir_{id_prod}", help="Tirar a la basura (Añade a Mermas)"):
                         conexion = sqlite3.connect(DB_PATH, timeout=10)
                         conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
                         conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Tirado')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
                         conexion.commit()
                         conexion.close()
                         
-                        if cant - 1 == 0: 
+                        if cant - 1 == 0 and precio > 0: 
                             mejor_super = obtener_mejor_super(nombre, tabla="despensa")
                             añadir_a_lista_compra(nombre.lower(), mejor_super)
                         st.rerun()
-                st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
+
+                with c_btn3:
+                    if st.button(f"❌", key=f"del_{id_prod}", help="Corregir error (Borra sin dejar rastro)"):
+                        conexion = sqlite3.connect(DB_PATH, timeout=10)
+                        conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
+                        # No registramos nada en consumo_alimentos para que no altere las métricas
+                        conexion.commit()
+                        conexion.close()
+                        st.rerun()
+
+            st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No hay alimentos en la despensa.")
 
