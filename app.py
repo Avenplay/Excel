@@ -1144,3 +1144,22 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
                 conexion.close()
                 st.success(f"{unidades_inv}x {nombre_inv.capitalize()} añadidos a tu {tipo_inv}.")
                 st.rerun()
+
+st.markdown("---")
+    st.header("💣 3. Reset de Fábrica (Pase a Producción)")
+    st.caption("Al pulsar este botón, la aplicación destruirá el archivo de la base de datos por completo y creará uno nuevo y virgen. ¡Úsalo solo para empezar de cero mañana!")
+    
+    if st.button("🚨 BORRAR TODO Y EMPEZAR DE CERO"):
+        # Nos aseguramos de cerrar cualquier conexión abierta por si acaso
+        try:
+            conexion.close()
+        except:
+            pass
+            
+        # Borramos el archivo físico de la base de datos
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+            
+        st.success("¡Base de datos vaporizada! La app se está reiniciando...")
+        st.rerun()
+
