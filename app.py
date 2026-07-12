@@ -991,7 +991,9 @@ elif opcion_menu == "📊 Análisis y Resumen Anual":
                 st.subheader("📅 Tabla Contable Detallada")
                 pivot_display = pivot_gastos.copy()
                 pivot_display['TOTAL MES'] = pivot_display.sum(axis=1)
-                st.dataframe(pivot_display.style.format("{:.2f} €"), use_container_width=True)
+                
+                # ---> AQUÍ ESTÁ LA CORRECCIÓN DE LA TABLA (width='stretch') <---
+                st.dataframe(pivot_display.style.format("{:.2f} €"), width='stretch')
             else:
                 st.info("No hay gastos registrados para analizar.")
             
