@@ -1055,30 +1055,43 @@ elif opcion_menu == "📷 Lector de Tickets IA":
             c_l, c_r = st.columns(2)
             with c_l:
                 df_desp = pd.DataFrame(datos.get('articulos_despensa', []))
-                if not df_desp.empty: st.dataframe(df_desp, use_container_width=True)
+                # AQUÍ CORREGIMOS EL AVISO DE STREAMLIT (width='stretch')
+                if not df_desp.empty: st.dataframe(df_desp, width='stretch')
             with c_r:
                 df_hogar = pd.DataFrame(datos.get('gastos_hogar', []))
-                if not df_hogar.empty: st.dataframe(df_hogar, use_container_width=True)
+                if not df_hogar.empty: st.dataframe(df_hogar, width='stretch')
                 
             if st.button("🔨 Inyectar Todo al Sistema"):
                 conexion = sqlite3.connect(DB_PATH, timeout=10)
                 cursor = conexion.cursor()
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 
+                # --- BLINDAJE ANTI-ERRORES DE LA IA ---
                 for item in datos.get('articulos_despensa', []):
-                    producto = item.get('producto', 'Alimento sin clasificar').lower().strip()
-                    unidades = item.get('unidades', 1)
-                    peso = item.get('peso_kg', 1.0)
-                    precio = item.get('precio_unitario', 0.0)
+                    prod_raw = item.get('producto')
+                    producto = prod_raw.lower().strip() if prod_raw else 'alimento sin clasificar'
                     
-                    cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)", 
+                    unid_raw = item.get('unidades')
+                    unidades = int(unid_raw) if unid_raw is not None else 1
+                    
+                    peso_raw = item.get('peso_kg')
+                    peso = float(peso_raw) if peso_raw is not None else 1.0
+                    
+                    precio_raw = item.get('precio_unitario')
+                    precio = float(precio_raw) if precio_raw is not None else 0.0
+                    
+                    # Añadimos 'Armario' por defecto para que la base de datos lo procese bien
+                    cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, ?, ?, ?, ?, ?, 'Armario')", 
                                    (producto, super_det, unidades, peso, precio, fecha_actual))
                     cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
-                                   (fecha_actual, f"Alimento: {producto}", unidades * precio, pago_det))
+                                   (fecha_actual, f"Alimento: {producto.capitalize()}", unidades * precio, pago_det))
                 
                 for gasto in datos.get('gastos_hogar', []):
-                    concepto_hogar = gasto.get('concepto', 'Utensilio desconocido').capitalize()
-                    precio_total_hogar = gasto.get('precio_total', 0.0)
+                    conc_raw = gasto.get('concepto')
+                    concepto_hogar = conc_raw.capitalize() if conc_raw else 'Utensilio desconocido'
+                    
+                    precio_t_raw = gasto.get('precio_total')
+                    precio_total_hogar = float(precio_t_raw) if precio_t_raw is not None else 0.0
                     
                     cursor.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, 1, 1.0, ?, ?)", 
                                    (concepto_hogar.lower(), super_det, precio_total_hogar, fecha_actual))
