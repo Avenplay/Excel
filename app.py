@@ -389,7 +389,6 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
             
         if st.form_submit_button("Añadir al Inventario") and nombre_d:
             conexion = sqlite3.connect(DB_PATH, timeout=10)
-            # Inyectamos origen 'Regalo/Sin Coste' y precio 0.0 para que no sume al consumirlo
             conexion.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, 'Regalo/Sin Coste', ?, 1.0, 0.0, ?, ?)",
                            (nombre_d.strip().lower(), unidades_d, datetime.now().strftime("%Y-%m-%d"), ubicacion_d))
             conexion.commit()
@@ -422,13 +421,13 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
                 nombre = fila['producto_generico'].capitalize()
                 superm = fila['supermercado']
                 cant = fila['unidades_actuales']
+                peso = fila['peso_neto_kg']
                 precio = fila['precio_unitario']
                 ubi_actual = fila['ubicacion']
                 
-                # Ajuste visual si es regalo o comprado
                 txt_precio = f" | {precio}€/ud" if precio > 0 else " | 🎁 Sin coste"
                 
-                c_info, c_ubi, c_btn1, c_btn2, c_btn3 = st.columns([3, 2, 1, 1, 1])
+                c_info, c_ubi, c_btn1, c_btn2, c_btn3, c_btn4 = st.columns([3, 1.5, 0.8, 0.8, 0.8, 1.2])
                 with c_info: 
                     icono = iconos_ubi.get(ubi_actual, "📦")
                     st.write(f"{icono} **{nombre}** ({superm}) — **{cant} uds**{txt_precio}")
@@ -472,7 +471,20 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
                     if st.button(f"❌", key=f"del_{id_prod}", help="Corregir error (Borra sin dejar rastro)"):
                         conexion = sqlite3.connect(DB_PATH, timeout=10)
                         conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
-                        # No registramos nada en consumo_alimentos para que no altere las métricas
+                        conexion.commit()
+                        conexion.close()
+                        st.rerun()
+                        
+                with c_btn4:
+                    if st.button(f"➡️ Hogar", key=f"mov_h_{id_prod}", help="Mover este artículo a Utensilios (Hogar)"):
+                        conexion = sqlite3.connect(DB_PATH, timeout=10)
+                        # Mover artículo a la tabla de hogar
+                        conexion.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)",
+                                       (nombre.lower(), superm, cant, peso, precio, fila['fecha_compra']))
+                        conexion.execute("DELETE FROM despensa WHERE id = ?", (id_prod,))
+                        # Cambiar el nombre contable en el banco para las gráficas
+                        conexion.execute("UPDATE movimientos_caja SET concepto = ? WHERE concepto = ? AND fecha = ?",
+                                       (f"Bazar/Utensilio: {nombre}", f"Alimento: {nombre}", fila['fecha_compra']))
                         conexion.commit()
                         conexion.close()
                         st.rerun()
@@ -480,7 +492,7 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No hay alimentos en la despensa.")
-
+        
 elif opcion_menu == "🏠 Utensilios (Hogar)":
     st.title("🏠 Inventario de Utensilios y Limpieza")
     
@@ -517,7 +529,7 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
             cant = fila['unidades_actuales']
             precio = fila['precio_unitario']
             
-            c1, c2, c3 = st.columns([6, 2, 2])
+            c1, c2, c3, c4 = st.columns([5, 1.5, 1.5, 1.5])
             with c1: st.write(f"🔹 **{nombre}** ({superm}) — **{cant} uds** | **{precio} €/ud**")
             with c2:
                 if st.button("🧹 Gastar 1 ud", key=f"uso_hogar_{id_prod}"):
@@ -541,6 +553,20 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
                         mejor_super = obtener_mejor_super(nombre, tabla="utensilios")
                         añadir_a_lista_compra(nombre.lower(), mejor_super)
                     st.rerun()
+            with c4:
+                if st.button("➡️ Despensa", key=f"mov_d_{id_prod}", help="Mover este artículo a Despensa (Alimentos)"):
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    # Mover artículo a la tabla de alimentos
+                    conexion.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, ?, ?, ?, ?, ?, 'Armario')",
+                                   (nombre.lower(), superm, cant, fila['peso_neto_kg'], precio, fila['fecha_compra']))
+                    conexion.execute("DELETE FROM utensilios WHERE id = ?", (id_prod,))
+                    # Cambiar el nombre contable en el banco para las gráficas
+                    conexion.execute("UPDATE movimientos_caja SET concepto = ? WHERE concepto = ? AND fecha = ?",
+                                   (f"Alimento: {nombre}", f"Bazar/Utensilio: {nombre}", fila['fecha_compra']))
+                    conexion.commit()
+                    conexion.close()
+                    st.rerun()
+
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No tienes utensilios o productos de limpieza registrados.")
@@ -761,8 +787,8 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
         media_supermercado = 0.0
 
     col_p1, col_p2 = st.columns(2)
-    with col_p1: sueldo_base = st.number_input("Nómina Fija Mensual (€)", min_value=0.0, value=1300.0)
-    with col_p2: gastos_fijos_est = st.number_input("Suministros (Agua, Luz, Internet, etc)", min_value=0.0, value=150.0)
+    with col_p1: sueldo_base = st.number_input("Nómina Fija Mensual (€)", min_value=0.0, value=1380.0)
+    with col_p2: gastos_fijos_est = st.number_input("Suministros (Agua, Luz, Internet, etc)", min_value=0.0, value=1066.0)
         
     # EL CÁLCULO DEL COSTE DE SUPERVIVENCIA
     coste_supervivencia = gastos_fijos_est + total_recurrentes + total_cuotas_plazos + total_provisiones_mes + media_supermercado
@@ -1022,11 +1048,15 @@ elif opcion_menu == "📷 Lector de Tickets IA":
             st.image(imagen, width=250)
             
             if st.button("🚀 Analizar Ticket"):
-                with st.spinner("Procesando con IA..."):
+                with st.spinner("Procesando con IA de Alta Precisión..."):
                     try:
                         client = genai.Client(api_key=api_key)
                         imagen.save("temp_ticket.png")
-                        prompt = "Analiza este ticket y devuelve estrictamente un objeto JSON con las claves: supermercado, metodo_pago, articulos_despensa (lista de objetos: producto, unidades, peso_kg, precio_unitario), y gastos_hogar (lista: concepto, precio_total). Sin explicaciones, solo el JSON."
+                        
+                        prompt = """Analiza este ticket minuciosamente y devuelve ESTRICTAMENTE un objeto JSON.
+                        REGLA 1: Clasifica impecablemente los artículos. 'articulos_despensa' es SOLO comida y bebida. 'gastos_hogar' es TODO lo demás (limpieza, detergentes, higiene personal, papel higiénico, menaje, etc.).
+                        REGLA 2: NO copies el nombre literal ni abreviaturas raras del ticket. Traduce y resume el producto a su nombre GENÉRICO. Ejemplo: 'detergente gel masella colon 12' -> 'Detergente', 'migas de atun a girasol fyc 650' -> 'Lata de atún', 'pap hig compact' -> 'Papel higiénico'.
+                        Las claves del JSON DEBEN ser: supermercado, metodo_pago, articulos_despensa (lista de objetos: producto, unidades, peso_kg, precio_unitario), y gastos_hogar (lista: concepto, precio_total). Sin explicaciones, solo JSON."""
                         
                         uploaded_file = client.files.upload(file="temp_ticket.png")
                         response = client.models.generate_content(model='gemini-2.5-flash', contents=[uploaded_file, prompt])
@@ -1054,57 +1084,64 @@ elif opcion_menu == "📷 Lector de Tickets IA":
             with c1: super_det = st.selectbox("Supermercado:", LISTA_SUPERS, index=LISTA_SUPERS.index(datos.get('supermercado', 'Otros')) if datos.get('supermercado', 'Otros') in LISTA_SUPERS else 0)
             with c2: pago_det = st.selectbox("Pago:", ["Efectivo", "Tarjeta/PayPal"], index=0 if datos.get('metodo_pago', 'Tarjeta/PayPal') == "Efectivo" else 1)
             
+            # --- CONVERTIMOS LAS TABLAS EN EDITABLES (st.data_editor) ---
+            st.info("💡 **Revisión Manual:** Haz doble clic en cualquier celda para corregir a la IA antes de inyectar. También puedes añadir o borrar filas.")
+            
             c_l, c_r = st.columns(2)
             with c_l:
+                st.markdown("**🛒 Alimentación**")
                 df_desp = pd.DataFrame(datos.get('articulos_despensa', []))
-                # AQUÍ CORREGIMOS EL AVISO DE STREAMLIT (width='stretch')
-                if not df_desp.empty: st.dataframe(df_desp, width='stretch')
+                if not df_desp.empty: 
+                    # El parámetro num_rows="dynamic" te permite añadir/borrar filas
+                    df_desp = st.data_editor(df_desp, width='stretch', num_rows="dynamic", key="edit_desp")
             with c_r:
+                st.markdown("**🧼 Hogar / Otros**")
                 df_hogar = pd.DataFrame(datos.get('gastos_hogar', []))
-                if not df_hogar.empty: st.dataframe(df_hogar, width='stretch')
+                if not df_hogar.empty: 
+                    df_hogar = st.data_editor(df_hogar, width='stretch', num_rows="dynamic", key="edit_hogar")
                 
             if st.button("🔨 Inyectar Todo al Sistema"):
                 conexion = sqlite3.connect(DB_PATH, timeout=10)
                 cursor = conexion.cursor()
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 
-                # --- BLINDAJE ANTI-ERRORES DE LA IA ---
-                for item in datos.get('articulos_despensa', []):
-                    prod_raw = item.get('producto')
-                    producto = prod_raw.lower().strip() if prod_raw else 'alimento sin clasificar'
-                    
-                    unid_raw = item.get('unidades')
-                    unidades = int(unid_raw) if unid_raw is not None else 1
-                    
-                    peso_raw = item.get('peso_kg')
-                    peso = float(peso_raw) if peso_raw is not None else 1.0
-                    
-                    precio_raw = item.get('precio_unitario')
-                    precio = float(precio_raw) if precio_raw is not None else 0.0
-                    
-                    # Añadimos 'Armario' por defecto para que la base de datos lo procese bien
-                    cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, ?, ?, ?, ?, ?, 'Armario')", 
-                                   (producto, super_det, unidades, peso, precio, fecha_actual))
-                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
-                                   (fecha_actual, f"Alimento: {producto.capitalize()}", unidades * precio, pago_det))
+                # Leemos los datos directamente de los DataFrames EDITADOS por ti
+                if not df_desp.empty:
+                    for item in df_desp.to_dict('records'):
+                        prod_raw = item.get('producto')
+                        producto = str(prod_raw).lower().strip() if pd.notna(prod_raw) else 'alimento sin clasificar'
+                        
+                        unid_raw = item.get('unidades')
+                        unidades = int(unid_raw) if pd.notna(unid_raw) else 1
+                        
+                        peso_raw = item.get('peso_kg')
+                        peso = float(peso_raw) if pd.notna(peso_raw) else 1.0
+                        
+                        precio_raw = item.get('precio_unitario')
+                        precio = float(precio_raw) if pd.notna(precio_raw) else 0.0
+                        
+                        cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, ?, ?, ?, ?, ?, 'Armario')", 
+                                       (producto, super_det, unidades, peso, precio, fecha_actual))
+                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
+                                       (fecha_actual, f"Alimento: {producto.capitalize()}", unidades * precio, pago_det))
                 
-                for gasto in datos.get('gastos_hogar', []):
-                    conc_raw = gasto.get('concepto')
-                    concepto_hogar = conc_raw.capitalize() if conc_raw else 'Utensilio desconocido'
-                    
-                    precio_t_raw = gasto.get('precio_total')
-                    precio_total_hogar = float(precio_t_raw) if precio_t_raw is not None else 0.0
-                    
-                    cursor.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, 1, 1.0, ?, ?)", 
-                                   (concepto_hogar.lower(), super_det, precio_total_hogar, fecha_actual))
-                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
-                                   (fecha_actual, f"Bazar/Utensilio: {concepto_hogar}", precio_total_hogar, pago_det))
+                if not df_hogar.empty:
+                    for gasto in df_hogar.to_dict('records'):
+                        conc_raw = gasto.get('concepto')
+                        concepto_hogar = str(conc_raw).capitalize() if pd.notna(conc_raw) else 'Utensilio desconocido'
+                        
+                        precio_t_raw = gasto.get('precio_total')
+                        precio_total_hogar = float(precio_t_raw) if pd.notna(precio_t_raw) else 0.0
+                        
+                        cursor.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, 1, 1.0, ?, ?)", 
+                                       (concepto_hogar.lower(), super_det, precio_total_hogar, fecha_actual))
+                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
+                                       (fecha_actual, f"Bazar/Utensilio: {concepto_hogar}", precio_total_hogar, pago_det))
                 
                 conexion.commit()
                 conexion.close()
                 del st.session_state['resultado_json_ticket']
                 st.rerun()
-
 elif opcion_menu == "⚙️ Configuración y Arranque":
     st.title("⚙️ Carga de Saldos Iniciales (Onboarding)")
     st.info("💡 Usa esta pestaña solo para configurar tu punto de partida. Carga lo que tienes en casa hoy. Una vez termines de volcar tu casa, puedes ignorar o borrar esta pestaña.")
