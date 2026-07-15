@@ -768,15 +768,15 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     st.title("🔮 Consultor de Viabilidad y Airbag")
     st.caption("Descubre cuánto dinero libre tienes realmente y blinda tu economía ante imprevistos.")
     
-    # --- MOTOR DE CÁLCULO DE MEDIA MÓVIL (SUPERMERCADO Y HOGAR) ---
+    # --- 1. LECTURA DE BASES DE DATOS ---
     conexion = sqlite3.connect(DB_PATH, timeout=10)
+    
     df_supermercado = pd.read_sql_query("""
         SELECT fecha, monto FROM movimientos_caja 
         WHERE tipo_ingreso_gasto IN ('Alimentación', 'Hogar') 
            OR concepto LIKE 'Alimento:%' 
            OR concepto LIKE 'Bazar/Utensilio:%'
     """, conexion)
-    conexion.close()
     
     if not df_supermercado.empty:
         df_supermercado['mes_año'] = df_supermercado['fecha'].str[:7]
@@ -786,26 +786,36 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     else:
         media_supermercado = 0.0
 
+    # Cargar el airbag
+    df_airbag = pd.read_sql_query("SELECT acumulado FROM fondo_emergencia WHERE id=1", conexion)
+    acumulado_airbag = df_airbag.iloc[0]['acumulado'] if not df_airbag.empty else 0.0
+    
+    # NUEVO: Calcular cuánto dinero te exigen los proyectos que YA tienes activos
+    df_proj = pd.read_sql_query("SELECT * FROM proyectos_futuros", conexion)
+    total_cuotas_proyectos = 0.0
+    for index, fila in df_proj.iterrows():
+        faltan = fila['objetivo_total'] - fila['ahorrado_acumulado']
+        if faltan > 0:
+            total_cuotas_proyectos += faltan / fila['meses_restantes'] if fila['meses_restantes'] > 0 else faltan
+
+    conexion.close()
+
+    # --- 2. CONFIGURACIÓN FIJA ---
     col_p1, col_p2 = st.columns(2)
-    with col_p1: sueldo_base = st.number_input("Nómina Fija Mensual (€)", min_value=0.0, value=1380.0)
+    with col_p1: sueldo_base = st.number_input("Nómina Fija Mensual (€)", min_value=0.0, value=1300.0)
     with col_p2: gastos_fijos_est = st.number_input("Suministros (Agua, Luz, Internet, etc)", min_value=0.0, value=0.0)
         
-    # EL CÁLCULO DEL COSTE DE SUPERVIVENCIA
     coste_supervivencia = gastos_fijos_est + total_recurrentes + total_cuotas_plazos + total_provisiones_mes + media_supermercado
     objetivo_airbag = coste_supervivencia * 2.5
     
-    # LA MATEMÁTICA DEFINITIVA DEL AHORRO LIBRE
+    # LA MATEMÁTICA DEFINITIVA (Ahora resta los proyectos activos)
     capacidad_ahorroador_teorica = sueldo_base - coste_supervivencia
+    ahorro_libre_real = capacidad_ahorroador_teorica - total_cuotas_proyectos
     
-    # LECTURA DEL AIRBAG ACTUAL
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
-    df_airbag = pd.read_sql_query("SELECT acumulado FROM fondo_emergencia WHERE id=1", conexion)
-    acumulado_airbag = df_airbag.iloc[0]['acumulado'] if not df_airbag.empty else 0.0
-    conexion.close()
-    
+    # --- 3. DIBUJO DEL AIRBAG ---
     st.markdown("---")
     st.header("🛡️ Tu Airbag Financiero (Fondo de Emergencia)")
-    st.info(f"💡 **Coste de Supervivencia:** Tu casa necesita **{coste_supervivencia:,.2f} €/mes** para funcionar. Tu objetivo ideal es acumular 3 meses de tranquilidad (**{objetivo_airbag:,.2f} €**).")
+    st.info(f"💡 **Coste de Supervivencia:** Tu casa necesita **{coste_supervivencia:,.2f} €/mes** para funcionar. Tu objetivo ideal es acumular 2.5 meses de tranquilidad (**{objetivo_airbag:,.2f} €**).")
     
     progreso_airbag = min(100.0, (acumulado_airbag / objetivo_airbag) * 100) if objetivo_airbag > 0 else 100.0
     
@@ -816,7 +826,7 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     with col_a2:
         abono_airbag = st.number_input("Mover al Airbag (€)", min_value=0.0, step=50.0)
     with col_a3:
-        st.write("") # Espaciador
+        st.write("") 
         if st.button("🛡️ Blindar Dinero") and abono_airbag > 0:
             conexion = sqlite3.connect(DB_PATH, timeout=10)
             conexion.execute("UPDATE fondo_emergencia SET acumulado = acumulado + ? WHERE id = 1", (abono_airbag,))
@@ -828,31 +838,31 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
 
     st.markdown("---")
     
-    st.success(f"### 💰 AHORRO LIBRE REAL: {capacidad_ahorroador_teorica:,.2f} € / mes")
+    # --- 4. CONSULTOR DE VIABILIDAD MEJORADO ---
+    st.success(f"### 💰 AHORRO LIBRE DISPONIBLE PARA NUEVOS PROYECTOS: {ahorro_libre_real:,.2f} € / mes")
     
     st.markdown("**(Desglose Analítico):**")
     st.markdown(f"➕ Nómina: `{sueldo_base:,.2f} €`")
-    st.markdown(f"➖ Suministros (Agua/Luz): `{gastos_fijos_est:,.2f} €`")
-    st.markdown(f"➖ Recurrentes (Suscripciones/Letras): `{total_recurrentes:,.2f} €`")
-    st.markdown(f"➖ Cuotas de Plazos: `{total_cuotas_plazos:,.2f} €`")
-    st.markdown(f"➖ Provisiones (Seguros/IBI): `{total_provisiones_mes:,.2f} €`")
-    st.markdown(f"➖ Media Supermercado (Comida/Hogar): `{media_supermercado:,.2f} €`")
+    st.markdown(f"➖ Coste de Supervivencia (Suministros, Letras, Comida, Seguros): `{coste_supervivencia:,.2f} €`")
+    st.markdown(f"➖ Cuotas comprometidas en Proyectos Activos: `{total_cuotas_proyectos:,.2f} €`")
     st.markdown("---")
     
     if progreso_airbag < 100.0:
         st.warning("⚠️ **Atención:** Tu Airbag Financiero aún no está lleno. Te recomendamos encarecidamente priorizar este fondo antes de lanzar proyectos de capricho.")
     
     with st.form("form_proyecto"):
-        st.subheader("🚀 Lanzar un Proyecto Finalista (Viajes, Caprichos)")
+        st.subheader("🚀 Lanzar un Proyecto Finalista (Ej. Congelador, Viaje)")
         c1, c2, c3 = st.columns(3)
         with c1: proj_name = st.text_input("Proyecto")
         with c2: proj_target = st.number_input("Objetivo (€)", min_value=10.0)
-        with c3: proj_months = st.number_input("Meses", min_value=1, step=1)
+        with c3: proj_months = st.number_input("Meses para lograrlo", min_value=1, step=1)
         
-        if st.form_submit_button("Lanzar Proyecto") and proj_name:
+        if st.form_submit_button("Consultar Viabilidad y Lanzar") and proj_name:
             cuota_necesaria = proj_target / proj_months if proj_months > 0 else proj_target
-            if cuota_necesaria > capacidad_ahorroador_teorica:
-                st.error(f"🚨 Inviable: La cuota necesaria ({cuota_necesaria:.2f} €) supera tu Ahorro Libre actual ({capacidad_ahorroador_teorica:.2f} €).")
+            
+            # AHORA TE AVISA DE CUÁNTO CUESTA AL MES Y SI TE LLEGA EL DINERO
+            if cuota_necesaria > ahorro_libre_real:
+                st.error(f"🚨 INVIABLE: Este proyecto requiere ahorrar **{cuota_necesaria:.2f} €/mes**. Tu Ahorro Libre Disponible es de solo **{ahorro_libre_real:.2f} €/mes**.")
             else:
                 try:
                     conexion = sqlite3.connect(DB_PATH, timeout=10)
@@ -863,37 +873,47 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
                 except sqlite3.IntegrityError: 
                     st.error("⚠️ Ya existe un proyecto con ese nombre.")
                 
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
-    df_proj = pd.read_sql_query("SELECT * FROM proyectos_futuros", conexion)
-    conexion.close()
-    
+    # --- 5. GESTIÓN DE PROYECTOS (ROMPER LA HUCHA INCLUIDO) ---
     for index, fila in df_proj.iterrows():
         faltan = fila['objetivo_total'] - fila['ahorrado_acumulado']
-        cuota = faltan / fila['meses_restantes'] if fila['meses_restantes'] > 0 else faltan
-        st.subheader(f"🎯 Proyecto: {fila['nombre_proyecto']}")
-        st.progress(min(100.0, (fila['ahorrado_acumulado'] / fila['objetivo_total']) * 100) / 100.0)
+        progreso = min(100.0, (fila['ahorrado_acumulado'] / fila['objetivo_total']) * 100)
         
-        col_add1, col_add2, col_add3 = st.columns([2, 5, 3])
-        with col_add1: abono = st.number_input(f"Abonar (€)", min_value=0.0, step=10.0, key=f"num_{fila['id']}")
-        with col_add2:
-            st.write("")
-            if st.button("Confirmar", key=f"btn_h_{fila['id']}") and abono > 0:
+        st.subheader(f"🎯 Proyecto: {fila['nombre_proyecto']}")
+        st.progress(progreso / 100.0)
+        
+        if progreso >= 100.0:
+            st.success("✅ ¡Objetivo conseguido! Ya tienes el dinero protegido. Ve a la tienda, compra tu capricho y cierra este proyecto.")
+            if st.button("🎉 Comprar y Cerrar Proyecto", key=f"fin_proj_{fila['id']}"):
                 conexion = sqlite3.connect(DB_PATH, timeout=10)
-                conexion.execute("UPDATE proyectos_futuros SET ahorrado_acumulado = ahorrado_acumulado + ? WHERE id = ?", (abono, fila['id']))
-                conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
-                                 (datetime.now().strftime("%Y-%m-%d"), f"Abono hucha: {fila['nombre_proyecto']}", abono))
-                conexion.commit()
-                conexion.close()
-                st.rerun()
-        with col_add3:
-            st.write("")
-            if st.button("🗑️ Eliminar Proyecto", key=f"del_proj_{fila['id']}"):
-                conexion = sqlite3.connect(DB_PATH, timeout=10)
-                conexion.execute("DELETE FROM movimientos_caja WHERE concepto = ?", (f"Abono hucha: {fila['nombre_proyecto']}",))
                 conexion.execute("DELETE FROM proyectos_futuros WHERE id = ?", (fila['id'],))
                 conexion.commit()
                 conexion.close()
                 st.rerun()
+        else:
+            cuota_sugerida = faltan / fila['meses_restantes'] if fila['meses_restantes'] > 0 else faltan
+            st.caption(f"Faltan **{faltan:,.2f} €** | Cuota ideal recomendada: **{cuota_sugerida:,.2f} €/mes**")
+            
+            col_add1, col_add2, col_add3 = st.columns([2, 5, 3])
+            with col_add1: abono = st.number_input(f"Abonar (€)", min_value=0.0, step=10.0, key=f"num_{fila['id']}")
+            with col_add2:
+                st.write("")
+                if st.button("Confirmar", key=f"btn_h_{fila['id']}") and abono > 0:
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion.execute("UPDATE proyectos_futuros SET ahorrado_acumulado = ahorrado_acumulado + ? WHERE id = ?", (abono, fila['id']))
+                    conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+                                     (datetime.now().strftime("%Y-%m-%d"), f"Abono hucha: {fila['nombre_proyecto']}", abono))
+                    conexion.commit()
+                    conexion.close()
+                    st.rerun()
+            with col_add3:
+                st.write("")
+                if st.button("🗑️ Cancelar Proyecto", key=f"del_proj_{fila['id']}", help="Cancela el proyecto y devuelve el dinero ahorrado a tu Bolsa Única."):
+                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion.execute("DELETE FROM movimientos_caja WHERE concepto = ?", (f"Abono hucha: {fila['nombre_proyecto']}",))
+                    conexion.execute("DELETE FROM proyectos_futuros WHERE id = ?", (fila['id'],))
+                    conexion.commit()
+                    conexion.close()
+                    st.rerun()
         st.markdown("<hr style='margin:0.5rem 0px;'/>", unsafe_allow_html=True)
         
 elif opcion_menu == "🚗 Mi Coche":
