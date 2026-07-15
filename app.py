@@ -788,7 +788,7 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
 
     col_p1, col_p2 = st.columns(2)
     with col_p1: sueldo_base = st.number_input("Nómina Fija Mensual (€)", min_value=0.0, value=1380.0)
-    with col_p2: gastos_fijos_est = st.number_input("Suministros (Agua, Luz, Internet, etc)", min_value=0.0, value=1066.0)
+    with col_p2: gastos_fijos_est = st.number_input("Suministros (Agua, Luz, Internet, etc)", min_value=0.0, value=0)
         
     # EL CÁLCULO DEL COSTE DE SUPERVIVENCIA
     coste_supervivencia = gastos_fijos_est + total_recurrentes + total_cuotas_plazos + total_provisiones_mes + media_supermercado
