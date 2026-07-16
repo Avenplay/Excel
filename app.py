@@ -59,11 +59,6 @@ def inicializar_base_datos():
         unidades_actuales INTEGER NOT NULL DEFAULT 0, peso_neto_kg REAL NOT NULL, precio_unitario REAL NOT NULL,
         fecha_compra TEXT, ubicacion TEXT DEFAULT 'Armario'
     )""")
-    
-    try:
-        cursor.execute("ALTER TABLE despensa ADD COLUMN ubicacion TEXT DEFAULT 'Armario'")
-    except OperationalError:
-        pass
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS consumo_alimentos (
@@ -87,11 +82,6 @@ def inicializar_base_datos():
         id SERIAL PRIMARY KEY, articulo TEXT NOT NULL UNIQUE,
         monto_total REAL NOT NULL, meses_totales INTEGER NOT NULL, meses_pagados INTEGER NOT NULL DEFAULT 0
     )""")
-    
-    try:
-        cursor.execute("SELECT precio_unitario FROM utensilios LIMIT 1")
-    except OperationalError:
-        cursor.execute("DROP TABLE IF EXISTS utensilios")
         
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS utensilios (
