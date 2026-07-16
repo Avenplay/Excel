@@ -145,42 +145,67 @@ def ejecutar_automatizaciones_mensuales():
     conexion.commit()
     conexion.close()
 
-inicializar_base_datos()
-ejecutar_automatizaciones_mensuales()
+# --- INICIO CACHEADO PARA AHORRAR VIAJES A SUPABASE ---
+@st.cache_resource
+def arrancar_sistema():
+    inicializar_base_datos()
+    ejecutar_automatizaciones_mensuales()
+    return True
 
-# --- FUNCIONES AUXILIARES Y CÁLCULOS ---
+arrancar_sistema()
+
+# --- FUNCIONES AUXILIARES Y CÁLCULOS OPTIMIZADOS PARA CLOUD ---
 def obtener_totales_sistema():
     conexion = init_connection()
-    ingresos_fijos = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE tipo_ingreso_gasto='Ingreso Fijo'", conexion).iloc[0,0] or 0.0
-    extras_banco = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE subcuenta_extra='Extra-Banco'", conexion).iloc[0,0] or 0.0
-    gastos_tarjeta = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE tipo_ingreso_gasto LIKE 'Gasto%' AND metodo_pago='Tarjeta/PayPal'", conexion).iloc[0,0] or 0.0
-    extras_efectivo = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE subcuenta_extra='Extra-Efectivo'", conexion).iloc[0,0] or 0.0
-    gastos_efectivo = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE tipo_ingreso_gasto LIKE 'Gasto%' AND metodo_pago='Efectivo'", conexion).iloc[0,0] or 0.0
-    excepcionales = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE tipo_ingreso_gasto='Gasto Excepcional'", conexion).iloc[0,0] or 0.0
-    
-    coste_comida = pd.read_sql_query("SELECT SUM(coste_estimado) FROM consumo_alimentos WHERE estado='Consumido'", conexion).iloc[0,0] or 0.0
-    mermas_comida = pd.read_sql_query("SELECT SUM(coste_estimado) FROM consumo_alimentos WHERE estado='Tirado'", conexion).iloc[0,0] or 0.0
-    total_recurrentes = pd.read_sql_query("SELECT SUM(monto) FROM gastos_recurrentes", conexion).iloc[0,0] or 0.0
-    
-    inmovilizado_comida = pd.read_sql_query("SELECT SUM(unidades_actuales * precio_unitario) FROM despensa", conexion).iloc[0,0] or 0.0
-    inmovilizado_hogar = pd.read_sql_query("SELECT SUM(unidades_actuales * precio_unitario) FROM utensilios", conexion).iloc[0,0] or 0.0
-
     cursor = conexion.cursor()
+    
+    # 1. Macro-Consulta de Caja (6 matemáticas en 1 solo viaje)
+    cursor.execute("""
+        SELECT 
+            COALESCE(SUM(CASE WHEN tipo_ingreso_gasto='Ingreso Fijo' THEN monto ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN subcuenta_extra='Extra-Banco' THEN monto ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN tipo_ingreso_gasto LIKE 'Gasto%%' AND metodo_pago='Tarjeta/PayPal' THEN monto ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN subcuenta_extra='Extra-Efectivo' THEN monto ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN tipo_ingreso_gasto LIKE 'Gasto%%' AND metodo_pago='Efectivo' THEN monto ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN tipo_ingreso_gasto='Gasto Excepcional' THEN monto ELSE 0 END), 0)
+        FROM movimientos_caja
+    """)
+    ingresos_fijos, extras_banco, gastos_tarjeta, extras_efectivo, gastos_efectivo, excepcionales = cursor.fetchone()
+    
+    # 2. Macro-Consulta Alimentos (2 en 1)
+    cursor.execute("""
+        SELECT 
+            COALESCE(SUM(CASE WHEN estado='Consumido' THEN coste_estimado ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN estado='Tirado' THEN coste_estimado ELSE 0 END), 0)
+        FROM consumo_alimentos
+    """)
+    coste_comida, mermas_comida = cursor.fetchone()
+    
+    # 3. Consultas restantes rápidas
+    cursor.execute("SELECT COALESCE(SUM(monto), 0) FROM gastos_recurrentes")
+    total_recurrentes = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COALESCE(SUM(unidades_actuales * precio_unitario), 0) FROM despensa")
+    inmovilizado_comida = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COALESCE(SUM(unidades_actuales * precio_unitario), 0) FROM utensilios")
+    inmovilizado_hogar = cursor.fetchone()[0]
+    
     cursor.execute("SELECT monto_total, meses_totales FROM compras_plazos WHERE meses_pagados < meses_totales")
     total_cuotas_plazos = sum(row[0] / row[1] for row in cursor.fetchall())
     
-    cursor.execute("SELECT SUM(monto_total / 12.0) FROM previsiones_anuales")
-    total_provisiones_mes = cursor.fetchone()[0] or 0.0
-
+    cursor.execute("SELECT COALESCE(SUM(monto_total / 12.0), 0) FROM previsiones_anuales")
+    total_provisiones_mes = cursor.fetchone()[0]
+    
     conexion.close()
     
+    # Calculamos la liquidez final
     saldo_b = ingresos_fijos + extras_banco - gastos_tarjeta
     saldo_e = extras_efectivo - gastos_efectivo
     
     return saldo_b, saldo_e, extras_banco, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos, inmovilizado_comida, inmovilizado_hogar, total_provisiones_mes
 
 saldo_banco, saldo_efectivo, bizums_bloqueados, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos, inmovilizado_comida, inmovilizado_hogar, total_provisiones_mes = obtener_totales_sistema()
-
 def registrar_movimiento(concepto, monto, tipo, metodo, subcuenta='N/A'):
     conexion = init_connection()
     cursor = conexion.cursor()
