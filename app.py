@@ -1,11 +1,16 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
 from PIL import Image
 import json
 import os
 from google import genai
+import psycopg2
+from psycopg2 import IntegrityError, OperationalError
+import warnings
+
+# Silenciamos el aviso de Pandas sobre SQLAlchemy para mantener la consola limpia en producción
+warnings.filterwarnings('ignore', 'pandas only supports SQLAlchemy connectable')
 
 # --- BLOQUE DE SEGURIDAD ---
 def check_password():
@@ -30,73 +35,74 @@ if not check_password():
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Copiloto Financiero Doméstico", layout="wide")
-
-DB_PATH = "economia_casa.db"
 LISTA_SUPERS = ["Mercadona", "Lidl", "Carrefour", "Aldi", "Family Cash", "Dia", "Otros"]
+
+# --- FUNCIÓN CENTRALIZADA DE CONEXIÓN A POSTGRESQL ---
+def init_connection():
+    return psycopg2.connect(st.secrets["DATABASE_URL"])
 
 # --- INICIALIZACIÓN DE LA BASE DE DATOS ---
 def inicializar_base_datos():
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
+    conexion.autocommit = True
     cursor = conexion.cursor()
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS movimientos_caja (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT NOT NULL, concepto TEXT NOT NULL,
+        id SERIAL PRIMARY KEY, fecha TEXT NOT NULL, concepto TEXT NOT NULL,
         monto REAL NOT NULL, tipo_ingreso_gasto TEXT, metodo_pago TEXT, subcuenta_extra TEXT DEFAULT 'N/A'
     )""")
     
-   # (Sustituye la tabla despensa dentro de inicializar_base_datos)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS despensa (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, producto_generico TEXT NOT NULL, supermercado TEXT NOT NULL,
+        id SERIAL PRIMARY KEY, producto_generico TEXT NOT NULL, supermercado TEXT NOT NULL,
         unidades_actuales INTEGER NOT NULL DEFAULT 0, peso_neto_kg REAL NOT NULL, precio_unitario REAL NOT NULL,
         fecha_compra TEXT, ubicacion TEXT DEFAULT 'Armario'
     )""")
     
-    # Parche para actualizar las bases de datos antiguas sin perder tu comida
     try:
         cursor.execute("ALTER TABLE despensa ADD COLUMN ubicacion TEXT DEFAULT 'Armario'")
-    except sqlite3.OperationalError:
+    except OperationalError:
         pass
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS consumo_alimentos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT NOT NULL, producto_generico TEXT NOT NULL,
+        id SERIAL PRIMARY KEY, fecha TEXT NOT NULL, producto_generico TEXT NOT NULL,
         cantidad INTEGER NOT NULL, coste_estimado REAL NOT NULL, estado TEXT
     )""")
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS proyectos_futuros (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, nombre_proyecto TEXT NOT NULL UNIQUE,
+        id SERIAL PRIMARY KEY, nombre_proyecto TEXT NOT NULL UNIQUE,
         objetivo_total REAL NOT NULL, meses_restantes INTEGER NOT NULL, ahorrado_acumulado REAL NOT NULL DEFAULT 0.0
     )""")
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS gastos_recurrentes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, nombre_gasto TEXT NOT NULL UNIQUE, monto REAL NOT NULL
+        id SERIAL PRIMARY KEY, nombre_gasto TEXT NOT NULL UNIQUE, monto REAL NOT NULL
     )""")
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS compras_plazos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, articulo TEXT NOT NULL UNIQUE,
+        id SERIAL PRIMARY KEY, articulo TEXT NOT NULL UNIQUE,
         monto_total REAL NOT NULL, meses_totales INTEGER NOT NULL, meses_pagados INTEGER NOT NULL DEFAULT 0
     )""")
     
     try:
         cursor.execute("SELECT precio_unitario FROM utensilios LIMIT 1")
-    except sqlite3.OperationalError:
+    except OperationalError:
         cursor.execute("DROP TABLE IF EXISTS utensilios")
         
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS utensilios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, producto_generico TEXT NOT NULL, supermercado TEXT NOT NULL,
+        id SERIAL PRIMARY KEY, producto_generico TEXT NOT NULL, supermercado TEXT NOT NULL,
         unidades_actuales INTEGER NOT NULL DEFAULT 0, peso_neto_kg REAL NOT NULL, precio_unitario REAL NOT NULL,
         fecha_compra TEXT
     )""")
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS lista_compra (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, producto TEXT NOT NULL, supermercado_recomendado TEXT NOT NULL
+        id SERIAL PRIMARY KEY, producto TEXT NOT NULL, supermercado_recomendado TEXT NOT NULL
     )""")
 
     cursor.execute("""
@@ -105,48 +111,46 @@ def inicializar_base_datos():
         letra_mensual REAL NOT NULL DEFAULT 0.0,
         seguro_mensual REAL NOT NULL DEFAULT 0.0
     )""")
-    cursor.execute("INSERT OR IGNORE INTO configuracion_coche (id, letra_mensual, seguro_mensual) VALUES (1, 0.0, 0.0)")
+    cursor.execute("INSERT INTO configuracion_coche (id, letra_mensual, seguro_mensual) VALUES (1, 0.0, 0.0) ON CONFLICT (id) DO NOTHING")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS previsiones_anuales (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, concepto TEXT NOT NULL UNIQUE,
+        id SERIAL PRIMARY KEY, concepto TEXT NOT NULL UNIQUE,
         monto_total REAL NOT NULL, mes_objetivo INTEGER NOT NULL
     )""")
 
-# NUEVA TABLA: FONDO DE EMERGENCIA
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS fondo_emergencia (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         acumulado REAL NOT NULL DEFAULT 0.0
     )""")
-    cursor.execute("INSERT OR IGNORE INTO fondo_emergencia (id, acumulado) VALUES (1, 0.0)")
-    
-    conexion.commit()
+    cursor.execute("INSERT INTO fondo_emergencia (id, acumulado) VALUES (1, 0.0) ON CONFLICT (id) DO NOTHING")
+
     conexion.close()
 
 # --- PROCESAMIENTO MENSUAL AUTOMÁTICO ---
 def ejecutar_automatizaciones_mensuales():
     mes_actual = datetime.now().strftime("%Y-%m")
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     cursor = conexion.cursor()
     
     cursor.execute("SELECT nombre_gasto, monto FROM gastos_recurrentes")
     for nombre, monto in cursor.fetchall():
         concepto_cargo = f"Fijo Automático: {nombre}"
-        cursor.execute("SELECT COUNT(*) FROM movimientos_caja WHERE concepto = ? AND fecha LIKE ?", (concepto_cargo, f"{mes_actual}%"))
+        cursor.execute("SELECT COUNT(*) FROM movimientos_caja WHERE concepto = %s AND fecha LIKE %s", (concepto_cargo, f"{mes_actual}%"))
         if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+            cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', 'Tarjeta/PayPal')", 
                            (datetime.now().strftime("%Y-%m-%d"), concepto_cargo, monto))
             
     cursor.execute("SELECT id, articulo, monto_total, meses_totales, meses_pagados FROM compras_plazos WHERE meses_pagados < meses_totales")
     for pid, articulo, total, m_totales, m_pagados in cursor.fetchall():
-        concepto_base = f"Cuota Plazo: {articulo} (%"
-        cursor.execute("SELECT COUNT(*) FROM movimientos_caja WHERE concepto LIKE ? AND fecha LIKE ?", (concepto_base, f"{mes_actual}%"))
+        concepto_base = f"Cuota Plazo: {articulo} (%%"
+        cursor.execute("SELECT COUNT(*) FROM movimientos_caja WHERE concepto LIKE %s AND fecha LIKE %s", (concepto_base, f"{mes_actual}%"))
         if cursor.fetchone()[0] == 0:
             concepto_cuota = f"Cuota Plazo: {articulo} ({m_pagados + 1}/{m_totales})"
-            cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+            cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', 'Tarjeta/PayPal')", 
                            (datetime.now().strftime("%Y-%m-%d"), concepto_cuota, total / m_totales))
-            cursor.execute("UPDATE compras_plazos SET meses_pagados = meses_pagados + 1 WHERE id = ?", (pid,))
+            cursor.execute("UPDATE compras_plazos SET meses_pagados = meses_pagados + 1 WHERE id = %s", (pid,))
             
     conexion.commit()
     conexion.close()
@@ -156,7 +160,7 @@ ejecutar_automatizaciones_mensuales()
 
 # --- FUNCIONES AUXILIARES Y CÁLCULOS ---
 def obtener_totales_sistema():
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     ingresos_fijos = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE tipo_ingreso_gasto='Ingreso Fijo'", conexion).iloc[0,0] or 0.0
     extras_banco = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE subcuenta_extra='Extra-Banco'", conexion).iloc[0,0] or 0.0
     gastos_tarjeta = pd.read_sql_query("SELECT SUM(monto) FROM movimientos_caja WHERE tipo_ingreso_gasto LIKE 'Gasto%' AND metodo_pago='Tarjeta/PayPal'", conexion).iloc[0,0] or 0.0
@@ -188,26 +192,30 @@ def obtener_totales_sistema():
 saldo_banco, saldo_efectivo, bizums_bloqueados, excepcionales, coste_comida, mermas_comida, total_recurrentes, total_cuotas_plazos, inmovilizado_comida, inmovilizado_hogar, total_provisiones_mes = obtener_totales_sistema()
 
 def registrar_movimiento(concepto, monto, tipo, metodo, subcuenta='N/A'):
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     cursor = conexion.cursor()
-    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago, subcuenta_extra) VALUES (?, ?, ?, ?, ?, ?)", 
+    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago, subcuenta_extra) VALUES (%s, %s, %s, %s, %s, %s)", 
                    (datetime.now().strftime("%Y-%m-%d"), concepto, monto, tipo, metodo, subcuenta))
     conexion.commit()
     conexion.close()
 
 def obtener_mejor_super(producto_nombre, tabla="despensa"):
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
+    cursor = conexion.cursor()
     fecha_limite = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
-    q = f"SELECT supermercado FROM {tabla} WHERE producto_generico = ? AND fecha_compra >= ? GROUP BY supermercado ORDER BY AVG(precio_unitario/peso_neto_kg) ASC LIMIT 1"
-    res = conexion.execute(q, (producto_nombre.lower().strip(), fecha_limite)).fetchone()
+    q = f"SELECT supermercado FROM {tabla} WHERE producto_generico = %s AND fecha_compra >= %s GROUP BY supermercado ORDER BY AVG(precio_unitario/peso_neto_kg) ASC LIMIT 1"
+    cursor.execute(q, (producto_nombre.lower().strip(), fecha_limite))
+    res = cursor.fetchone()
     conexion.close()
     return res[0] if res else "Cualquiera"
 
 def añadir_a_lista_compra(producto, super_rec):
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
-    ext = conexion.execute("SELECT COUNT(*) FROM lista_compra WHERE producto = ?", (producto,)).fetchone()[0]
+    conexion = init_connection()
+    cursor = conexion.cursor()
+    cursor.execute("SELECT COUNT(*) FROM lista_compra WHERE producto = %s", (producto,))
+    ext = cursor.fetchone()[0]
     if ext == 0:
-        conexion.execute("INSERT INTO lista_compra (producto, supermercado_recomendado) VALUES (?, ?)", (producto, super_rec))
+        cursor.execute("INSERT INTO lista_compra (producto, supermercado_recomendado) VALUES (%s, %s)", (producto, super_rec))
         conexion.commit()
     conexion.close()
 
@@ -268,15 +276,19 @@ if opcion_menu == "💵 Control de Caja":
                     fecha_actual = datetime.now().strftime("%Y-%m-%d")
                     tabla_destino = "despensa" if categoria_gasto == "Alimentación" else "utensilios"
                     
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion = init_connection()
                     cursor = conexion.cursor()
                     
-                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, ?, ?)", 
+                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, %s, %s)", 
                                    (fecha_actual, f"{categoria_gasto}: {concepto_g}", monto_g, "Gasto Habitual", metodo_g))
                     
-                    cursor.execute(f"INSERT INTO {tabla_destino} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)", 
-                                   (concepto_g.lower().strip(), super_g, unidades_g, peso_g, precio_uni, fecha_actual))
-                    
+                    if tabla_destino == "despensa":
+                        cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (%s, %s, %s, %s, %s, %s, 'Armario')", 
+                                       (concepto_g.lower().strip(), super_g, unidades_g, peso_g, precio_uni, fecha_actual))
+                    else:
+                        cursor.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, %s, %s, %s, %s, %s)", 
+                                       (concepto_g.lower().strip(), super_g, unidades_g, peso_g, precio_uni, fecha_actual))
+                        
                     conexion.commit()
                     conexion.close()
                     st.rerun()
@@ -289,15 +301,15 @@ if opcion_menu == "💵 Control de Caja":
                 metodo_g = st.selectbox("Pago", ["Tarjeta/PayPal", "Efectivo"])
                 
                 if st.form_submit_button("Guardar Gasto Fijo") and concepto_g and monto_g > 0:
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
+                    conexion = init_connection()
                     cursor = conexion.cursor()
                     try:
-                        cursor.execute("INSERT INTO gastos_recurrentes (nombre_gasto, monto) VALUES (?, ?)", (concepto_g, monto_g))
-                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, ?, ?)", 
+                        cursor.execute("INSERT INTO gastos_recurrentes (nombre_gasto, monto) VALUES (%s, %s)", (concepto_g, monto_g))
+                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, %s, %s)", 
                                        (datetime.now().strftime("%Y-%m-%d"), f"Fijo Automático: {concepto_g}", monto_g, "Gasto Habitual", metodo_g))
                         conexion.commit()
                         st.rerun()
-                    except sqlite3.IntegrityError:
+                    except IntegrityError:
                         st.error("⚠️ Ya existe un gasto fijo recurrente con ese nombre exacto.")
                     finally:
                         conexion.close()
@@ -326,7 +338,7 @@ if opcion_menu == "💵 Control de Caja":
                 
     st.markdown("---")
     st.header("📜 Historial de Movimientos")
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     df_movimientos = pd.read_sql_query("SELECT * FROM movimientos_caja ORDER BY id DESC", conexion)
     conexion.close()
     
@@ -362,8 +374,9 @@ if opcion_menu == "💵 Control de Caja":
                 st.write(f"📅 **{m_fecha}** | `{m_tipo}` | **{m_concepto}** -> **{m_monto:,.2f} €** ({m_pago}) | {txt_balance}")
             with c_eliminar:
                 if st.button("🗑️ Borrar", key=f"del_mov_{m_id}"):
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("DELETE FROM movimientos_caja WHERE id = ?", (m_id,))
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("DELETE FROM movimientos_caja WHERE id = %s", (m_id,))
                     conexion.commit()
                     conexion.close()
                     st.rerun()
@@ -388,8 +401,9 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
             unidades_d = st.number_input("Unidades", min_value=1, step=1)
             
         if st.form_submit_button("Añadir al Inventario") and nombre_d:
-            conexion = sqlite3.connect(DB_PATH, timeout=10)
-            conexion.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, 'Regalo/Sin Coste', ?, 1.0, 0.0, ?, ?)",
+            conexion = init_connection()
+            cursor = conexion.cursor()
+            cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (%s, 'Regalo/Sin Coste', %s, 1.0, 0.0, %s, %s)",
                            (nombre_d.strip().lower(), unidades_d, datetime.now().strftime("%Y-%m-%d"), ubicacion_d))
             conexion.commit()
             conexion.close()
@@ -398,7 +412,7 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
     st.markdown("---")
     st.header("📦 Existencias (Alimentos)")
     
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     df_stock = pd.read_sql_query("SELECT * FROM despensa WHERE unidades_actuales > 0", conexion)
     conexion.close()
     
@@ -435,17 +449,19 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
                 with c_ubi:
                     nueva_ubi = st.selectbox("Lugar", ["Armario", "Nevera", "Congelador"], index=["Armario", "Nevera", "Congelador"].index(ubi_actual), key=f"ubi_{id_prod}", label_visibility="collapsed")
                     if nueva_ubi != ubi_actual:
-                        conexion = sqlite3.connect(DB_PATH, timeout=10)
-                        conexion.execute("UPDATE despensa SET ubicacion = ? WHERE id = ?", (nueva_ubi, id_prod))
+                        conexion = init_connection()
+                        cursor = conexion.cursor()
+                        cursor.execute("UPDATE despensa SET ubicacion = %s WHERE id = %s", (nueva_ubi, id_prod))
                         conexion.commit()
                         conexion.close()
                         st.rerun()
                         
                 with c_btn1:
                     if st.button(f"🍽️", key=f"con_{id_prod}", help="Consumir 1 ud"):
-                        conexion = sqlite3.connect(DB_PATH, timeout=10)
-                        conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
-                        conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Consumido')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
+                        conexion = init_connection()
+                        cursor = conexion.cursor()
+                        cursor.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = %s", (id_prod,))
+                        cursor.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (%s, %s, 1, %s, 'Consumido')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
                         conexion.commit()
                         conexion.close()
                         
@@ -456,9 +472,10 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
                         
                 with c_btn2:
                     if st.button(f"🗑️", key=f"tir_{id_prod}", help="Tirar a la basura (Añade a Mermas)"):
-                        conexion = sqlite3.connect(DB_PATH, timeout=10)
-                        conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
-                        conexion.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (?, ?, 1, ?, 'Tirado')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
+                        conexion = init_connection()
+                        cursor = conexion.cursor()
+                        cursor.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = %s", (id_prod,))
+                        cursor.execute("INSERT INTO consumo_alimentos (fecha, producto_generico, cantidad, coste_estimado, estado) VALUES (%s, %s, 1, %s, 'Tirado')", (datetime.now().strftime("%Y-%m-%d"), nombre.lower(), precio))
                         conexion.commit()
                         conexion.close()
                         
@@ -469,21 +486,21 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
 
                 with c_btn3:
                     if st.button(f"❌", key=f"del_{id_prod}", help="Corregir error (Borra sin dejar rastro)"):
-                        conexion = sqlite3.connect(DB_PATH, timeout=10)
-                        conexion.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
+                        conexion = init_connection()
+                        cursor = conexion.cursor()
+                        cursor.execute("UPDATE despensa SET unidades_actuales = unidades_actuales - 1 WHERE id = %s", (id_prod,))
                         conexion.commit()
                         conexion.close()
                         st.rerun()
                         
                 with c_btn4:
                     if st.button(f"➡️ Hogar", key=f"mov_h_{id_prod}", help="Mover este artículo a Utensilios (Hogar)"):
-                        conexion = sqlite3.connect(DB_PATH, timeout=10)
-                        # Mover artículo a la tabla de hogar
-                        conexion.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, ?, ?, ?)",
+                        conexion = init_connection()
+                        cursor = conexion.cursor()
+                        cursor.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, %s, %s, %s, %s, %s)",
                                        (nombre.lower(), superm, cant, peso, precio, fila['fecha_compra']))
-                        conexion.execute("DELETE FROM despensa WHERE id = ?", (id_prod,))
-                        # Cambiar el nombre contable en el banco para las gráficas
-                        conexion.execute("UPDATE movimientos_caja SET concepto = ? WHERE concepto = ? AND fecha = ?",
+                        cursor.execute("DELETE FROM despensa WHERE id = %s", (id_prod,))
+                        cursor.execute("UPDATE movimientos_caja SET concepto = %s WHERE concepto = %s AND fecha = %s",
                                        (f"Bazar/Utensilio: {nombre}", f"Alimento: {nombre}", fila['fecha_compra']))
                         conexion.commit()
                         conexion.close()
@@ -492,7 +509,7 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
             st.markdown("<hr style='margin:0.2rem 0px;'/>", unsafe_allow_html=True)
     else: 
         st.info("No hay alimentos en la despensa.")
-        
+
 elif opcion_menu == "🏠 Utensilios (Hogar)":
     st.title("🏠 Inventario de Utensilios y Limpieza")
     
@@ -508,8 +525,9 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
             precio_u = st.number_input("Precio/Ud aprox (€)", min_value=0.0, step=0.1)
             
         if st.form_submit_button("Añadir al Inventario") and nombre_u:
-            conexion = sqlite3.connect(DB_PATH, timeout=10)
-            conexion.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, ?, 1.0, ?, ?)",
+            conexion = init_connection()
+            cursor = conexion.cursor()
+            cursor.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, %s, %s, 1.0, %s, %s)",
                            (nombre_u.strip().lower(), super_u, unidades_u, precio_u, datetime.now().strftime("%Y-%m-%d")))
             conexion.commit()
             conexion.close()
@@ -517,7 +535,7 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
             
     st.markdown("---")
     st.header("📦 Existencias (Hogar)")
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     utensilios = pd.read_sql_query("SELECT * FROM utensilios WHERE unidades_actuales > 0", conexion)
     conexion.close()
     
@@ -533,8 +551,9 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
             with c1: st.write(f"🔹 **{nombre}** ({superm}) — **{cant} uds** | **{precio} €/ud**")
             with c2:
                 if st.button("🧹 Gastar 1 ud", key=f"uso_hogar_{id_prod}"):
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = %s", (id_prod,))
                     conexion.commit()
                     conexion.close()
                     
@@ -544,8 +563,9 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
                     st.rerun()
             with c3:
                 if st.button("🗑️ Desechar", key=f"tir_hogar_{id_prod}"):
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = ?", (id_prod,))
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("UPDATE utensilios SET unidades_actuales = unidades_actuales - 1 WHERE id = %s", (id_prod,))
                     conexion.commit()
                     conexion.close()
                     
@@ -555,13 +575,12 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
                     st.rerun()
             with c4:
                 if st.button("➡️ Despensa", key=f"mov_d_{id_prod}", help="Mover este artículo a Despensa (Alimentos)"):
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    # Mover artículo a la tabla de alimentos
-                    conexion.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, ?, ?, ?, ?, ?, 'Armario')",
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (%s, %s, %s, %s, %s, %s, 'Armario')",
                                    (nombre.lower(), superm, cant, fila['peso_neto_kg'], precio, fila['fecha_compra']))
-                    conexion.execute("DELETE FROM utensilios WHERE id = ?", (id_prod,))
-                    # Cambiar el nombre contable en el banco para las gráficas
-                    conexion.execute("UPDATE movimientos_caja SET concepto = ? WHERE concepto = ? AND fecha = ?",
+                    cursor.execute("DELETE FROM utensilios WHERE id = %s", (id_prod,))
+                    cursor.execute("UPDATE movimientos_caja SET concepto = %s WHERE concepto = %s AND fecha = %s",
                                    (f"Alimento: {nombre}", f"Bazar/Utensilio: {nombre}", fila['fecha_compra']))
                     conexion.commit()
                     conexion.close()
@@ -585,7 +604,7 @@ elif opcion_menu == "🛒 Lista de la Compra":
                 st.rerun()
                 
     st.markdown("---")
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     lista_df = pd.read_sql_query("SELECT * FROM lista_compra ORDER BY supermercado_recomendado ASC", conexion)
     conexion.close()
     
@@ -602,8 +621,9 @@ elif opcion_menu == "🛒 Lista de la Compra":
                 with c1: st.write(f"▫️ {row['producto'].capitalize()}")
                 with c2: 
                     if st.button("❌", key=f"del_list_{row['id']}"):
-                        conexion = sqlite3.connect(DB_PATH)
-                        conexion.execute("DELETE FROM lista_compra WHERE id=?", (row['id'],))
+                        conexion = init_connection()
+                        cursor = conexion.cursor()
+                        cursor.execute("DELETE FROM lista_compra WHERE id=%s", (row['id'],))
                         conexion.commit()
                         conexion.close()
                         st.rerun()
@@ -614,8 +634,9 @@ elif opcion_menu == "🛒 Lista de la Compra":
         st.markdown("<br>", unsafe_allow_html=True)
         
         def limpiar_bd_lista():
-            conn_limpia = sqlite3.connect(DB_PATH)
-            conn_limpia.execute("DELETE FROM lista_compra")
+            conn_limpia = init_connection()
+            cursor = conn_limpia.cursor()
+            cursor.execute("DELETE FROM lista_compra")
             conn_limpia.commit()
             conn_limpia.close()
 
@@ -639,16 +660,17 @@ elif opcion_menu == "🔄 Gastos Recurrentes":
             monto_fijo = st.number_input("Importe Mensual (€)", min_value=0.1, step=5.0)
             if st.form_submit_button("Registrar") and nombre_fijo and monto_fijo > 0:
                 try:
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("INSERT INTO gastos_recurrentes (nombre_gasto, monto) VALUES (?, ?)", (nombre_fijo, monto_fijo))
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("INSERT INTO gastos_recurrentes (nombre_gasto, monto) VALUES (%s, %s)", (nombre_fijo, monto_fijo))
                     conexion.commit()
                     conexion.close()
                     st.rerun()
-                except sqlite3.IntegrityError: 
+                except IntegrityError: 
                     st.error("⚠️ Ya existe ese gasto.")
                     
     with col_der:
-        conexion = sqlite3.connect(DB_PATH, timeout=10)
+        conexion = init_connection()
         df_fijos = pd.read_sql_query("SELECT * FROM gastos_recurrentes", conexion)
         conexion.close()
         for index, fila in df_fijos.iterrows():
@@ -656,9 +678,10 @@ elif opcion_menu == "🔄 Gastos Recurrentes":
             with c_txt: st.write(f"💼 **{fila['nombre_gasto']}**: {fila['monto']:,.2f} € / mes")
             with c_btn:
                 if st.button("🗑️ Eliminar", key=f"del_rec_{fila['id']}"):
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("DELETE FROM movimientos_caja WHERE concepto = ?", (f"Fijo Automático: {fila['nombre_gasto']}",))
-                    conexion.execute("DELETE FROM gastos_recurrentes WHERE id = ?", (fila['id'],))
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("DELETE FROM movimientos_caja WHERE concepto = %s", (f"Fijo Automático: {fila['nombre_gasto']}",))
+                    cursor.execute("DELETE FROM gastos_recurrentes WHERE id = %s", (fila['id'],))
                     conexion.commit()
                     conexion.close()
                     st.rerun()
@@ -678,16 +701,17 @@ elif opcion_menu == "💳 Compras a Plazos":
                     st.error(f"🚨 Cuota de {cuota:.2f} €/mes. Regla rota. ¡A tocateja!")
                 else:
                     try:
-                        conexion = sqlite3.connect(DB_PATH, timeout=10)
-                        conexion.execute("INSERT INTO compras_plazos (articulo, monto_total, meses_totales, meses_pagados) VALUES (?, ?, ?, 0)", (art_nombre, art_total, art_meses))
+                        conexion = init_connection()
+                        cursor = conexion.cursor()
+                        cursor.execute("INSERT INTO compras_plazos (articulo, monto_total, meses_totales, meses_pagados) VALUES (%s, %s, %s, 0)", (art_nombre, art_total, art_meses))
                         conexion.commit()
                         conexion.close()
                         st.rerun()
-                    except: 
+                    except IntegrityError: 
                         st.error("Ya existe.")
                         
     with col_r:
-        conexion = sqlite3.connect(DB_PATH, timeout=10)
+        conexion = init_connection()
         df_plazos = pd.read_sql_query("SELECT * FROM compras_plazos", conexion)
         conexion.close()
         for index, fila in df_plazos.iterrows():
@@ -695,9 +719,10 @@ elif opcion_menu == "💳 Compras a Plazos":
             st.write(f"💳 **{fila['articulo']}** | Cuota: **{cuota_actual:.2f} €/mes**")
             st.progress((fila['meses_pagados'] / fila['meses_totales']))
             if st.button("🗑️ Eliminar", key=f"del_plazo_{fila['id']}"):
-                conexion = sqlite3.connect(DB_PATH, timeout=10)
-                conexion.execute("DELETE FROM movimientos_caja WHERE concepto LIKE ?", (f"Cuota Plazo: {fila['articulo']} (%",))
-                conexion.execute("DELETE FROM compras_plazos WHERE id = ?", (fila['id'],))
+                conexion = init_connection()
+                cursor = conexion.cursor()
+                cursor.execute("DELETE FROM movimientos_caja WHERE concepto LIKE %s", (f"Cuota Plazo: {fila['articulo']} (%%",))
+                cursor.execute("DELETE FROM compras_plazos WHERE id = %s", (fila['id'],))
                 conexion.commit()
                 conexion.close()
                 st.rerun()
@@ -717,18 +742,19 @@ elif opcion_menu == "🗓️ Previsiones Anuales":
             
             if st.form_submit_button("Crear Previsión Anual") and prev_concepto:
                 try:
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("INSERT INTO previsiones_anuales (concepto, monto_total, mes_objetivo) VALUES (?, ?, ?)", (prev_concepto, prev_monto, prev_mes))
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("INSERT INTO previsiones_anuales (concepto, monto_total, mes_objetivo) VALUES (%s, %s, %s)", (prev_concepto, prev_monto, prev_mes))
                     conexion.commit()
                     conexion.close()
                     st.success("Regla de provisión creada.")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except IntegrityError:
                     st.error("⚠️ Ya existe una previsión con ese nombre.")
                     
     with col_p2:
         st.subheader("🛡️ Tus Provisiones Activas")
-        conexion = sqlite3.connect(DB_PATH, timeout=10)
+        conexion = init_connection()
         df_prevs = pd.read_sql_query("SELECT * FROM previsiones_anuales ORDER BY mes_objetivo ASC", conexion)
         conexion.close()
         
@@ -745,9 +771,10 @@ elif opcion_menu == "🗓️ Previsiones Anuales":
                     st.caption(f"🛡️ Guardando: **{cuota_mes:.2f} € / mes**")
                 with c_pago:
                     if st.button("💳 Registrar Pago", key=f"pagar_prev_{fila['id']}", help="Extrae el dinero del banco hoy, pero mantiene la regla de ahorro para el año que viene."):
-                        conexion = sqlite3.connect(DB_PATH, timeout=10)
+                        conexion = init_connection()
+                        cursor = conexion.cursor()
                         fecha_actual = datetime.now().strftime("%Y-%m-%d")
-                        conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', 'Tarjeta/PayPal')", 
                                          (fecha_actual, f"Pago Previsión: {fila['concepto']}", fila['monto_total']))
                         conexion.commit()
                         conexion.close()
@@ -755,8 +782,9 @@ elif opcion_menu == "🗓️ Previsiones Anuales":
                         st.rerun()
                 with c_del:
                     if st.button("❌", key=f"del_prev_{fila['id']}"):
-                        conexion = sqlite3.connect(DB_PATH, timeout=10)
-                        conexion.execute("DELETE FROM previsiones_anuales WHERE id = ?", (fila['id'],))
+                        conexion = init_connection()
+                        cursor = conexion.cursor()
+                        cursor.execute("DELETE FROM previsiones_anuales WHERE id = %s", (fila['id'],))
                         conexion.commit()
                         conexion.close()
                         st.rerun()
@@ -768,8 +796,7 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     st.title("🔮 Consultor de Viabilidad y Airbag")
     st.caption("Descubre cuánto dinero libre tienes realmente y blinda tu economía ante imprevistos.")
     
-    # --- 1. LECTURA DE BASES DE DATOS ---
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     
     df_supermercado = pd.read_sql_query("""
         SELECT fecha, monto FROM movimientos_caja 
@@ -786,11 +813,9 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     else:
         media_supermercado = 0.0
 
-    # Cargar el airbag
     df_airbag = pd.read_sql_query("SELECT acumulado FROM fondo_emergencia WHERE id=1", conexion)
     acumulado_airbag = df_airbag.iloc[0]['acumulado'] if not df_airbag.empty else 0.0
     
-    # NUEVO: Calcular cuánto dinero te exigen los proyectos que YA tienes activos
     df_proj = pd.read_sql_query("SELECT * FROM proyectos_futuros", conexion)
     total_cuotas_proyectos = 0.0
     for index, fila in df_proj.iterrows():
@@ -800,7 +825,6 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
 
     conexion.close()
 
-    # --- 2. CONFIGURACIÓN FIJA ---
     col_p1, col_p2 = st.columns(2)
     with col_p1: sueldo_base = st.number_input("Nómina Fija Mensual (€)", min_value=0.0, value=1300.0)
     with col_p2: gastos_fijos_est = st.number_input("Suministros (Agua, Luz, Internet, etc)", min_value=0.0, value=0.0)
@@ -808,11 +832,9 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     coste_supervivencia = gastos_fijos_est + total_recurrentes + total_cuotas_plazos + total_provisiones_mes + media_supermercado
     objetivo_airbag = coste_supervivencia * 2.5
     
-    # LA MATEMÁTICA DEFINITIVA (Ahora resta los proyectos activos)
     capacidad_ahorroador_teorica = sueldo_base - coste_supervivencia
     ahorro_libre_real = capacidad_ahorroador_teorica - total_cuotas_proyectos
     
-    # --- 3. DIBUJO DEL AIRBAG ---
     st.markdown("---")
     st.header("🛡️ Tu Airbag Financiero (Fondo de Emergencia)")
     st.info(f"💡 **Coste de Supervivencia:** Tu casa necesita **{coste_supervivencia:,.2f} €/mes** para funcionar. Tu objetivo ideal es acumular 2.5 meses de tranquilidad (**{objetivo_airbag:,.2f} €**).")
@@ -828,9 +850,10 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     with col_a3:
         st.write("") 
         if st.button("🛡️ Blindar Dinero") and abono_airbag > 0:
-            conexion = sqlite3.connect(DB_PATH, timeout=10)
-            conexion.execute("UPDATE fondo_emergencia SET acumulado = acumulado + ? WHERE id = 1", (abono_airbag,))
-            conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+            conexion = init_connection()
+            cursor = conexion.cursor()
+            cursor.execute("UPDATE fondo_emergencia SET acumulado = acumulado + %s WHERE id = 1", (abono_airbag,))
+            cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', 'Tarjeta/PayPal')", 
                              (datetime.now().strftime("%Y-%m-%d"), "Abono: Fondo de Emergencia", abono_airbag))
             conexion.commit()
             conexion.close()
@@ -838,7 +861,6 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
 
     st.markdown("---")
     
-    # --- 4. CONSULTOR DE VIABILIDAD MEJORADO ---
     st.success(f"### 💰 AHORRO LIBRE DISPONIBLE PARA NUEVOS PROYECTOS: {ahorro_libre_real:,.2f} € / mes")
     
     st.markdown("**(Desglose Analítico):**")
@@ -860,20 +882,19 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
         if st.form_submit_button("Consultar Viabilidad y Lanzar") and proj_name:
             cuota_necesaria = proj_target / proj_months if proj_months > 0 else proj_target
             
-            # AHORA TE AVISA DE CUÁNTO CUESTA AL MES Y SI TE LLEGA EL DINERO
             if cuota_necesaria > ahorro_libre_real:
                 st.error(f"🚨 INVIABLE: Este proyecto requiere ahorrar **{cuota_necesaria:.2f} €/mes**. Tu Ahorro Libre Disponible es de solo **{ahorro_libre_real:.2f} €/mes**.")
             else:
                 try:
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("INSERT INTO proyectos_futuros (nombre_proyecto, objetivo_total, meses_restantes) VALUES (?, ?, ?)", (proj_name, proj_target, proj_months))
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("INSERT INTO proyectos_futuros (nombre_proyecto, objetivo_total, meses_restantes) VALUES (%s, %s, %s)", (proj_name, proj_target, proj_months))
                     conexion.commit()
                     conexion.close()
                     st.rerun()
-                except sqlite3.IntegrityError: 
+                except IntegrityError: 
                     st.error("⚠️ Ya existe un proyecto con ese nombre.")
                 
-    # --- 5. GESTIÓN DE PROYECTOS (ROMPER LA HUCHA INCLUIDO) ---
     for index, fila in df_proj.iterrows():
         faltan = fila['objetivo_total'] - fila['ahorrado_acumulado']
         progreso = min(100.0, (fila['ahorrado_acumulado'] / fila['objetivo_total']) * 100)
@@ -884,8 +905,9 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
         if progreso >= 100.0:
             st.success("✅ ¡Objetivo conseguido! Ya tienes el dinero protegido. Ve a la tienda, compra tu capricho y cierra este proyecto.")
             if st.button("🎉 Comprar y Cerrar Proyecto", key=f"fin_proj_{fila['id']}"):
-                conexion = sqlite3.connect(DB_PATH, timeout=10)
-                conexion.execute("DELETE FROM proyectos_futuros WHERE id = ?", (fila['id'],))
+                conexion = init_connection()
+                cursor = conexion.cursor()
+                cursor.execute("DELETE FROM proyectos_futuros WHERE id = %s", (fila['id'],))
                 conexion.commit()
                 conexion.close()
                 st.rerun()
@@ -898,9 +920,10 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
             with col_add2:
                 st.write("")
                 if st.button("Confirmar", key=f"btn_h_{fila['id']}") and abono > 0:
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("UPDATE proyectos_futuros SET ahorrado_acumulado = ahorrado_acumulado + ? WHERE id = ?", (abono, fila['id']))
-                    conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("UPDATE proyectos_futuros SET ahorrado_acumulado = ahorrado_acumulado + %s WHERE id = %s", (abono, fila['id']))
+                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', 'Tarjeta/PayPal')", 
                                      (datetime.now().strftime("%Y-%m-%d"), f"Abono hucha: {fila['nombre_proyecto']}", abono))
                     conexion.commit()
                     conexion.close()
@@ -908,23 +931,24 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
             with col_add3:
                 st.write("")
                 if st.button("🗑️ Cancelar Proyecto", key=f"del_proj_{fila['id']}", help="Cancela el proyecto y devuelve el dinero ahorrado a tu Bolsa Única."):
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("DELETE FROM movimientos_caja WHERE concepto = ?", (f"Abono hucha: {fila['nombre_proyecto']}",))
-                    conexion.execute("DELETE FROM proyectos_futuros WHERE id = ?", (fila['id'],))
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("DELETE FROM movimientos_caja WHERE concepto = %s", (f"Abono hucha: {fila['nombre_proyecto']}",))
+                    cursor.execute("DELETE FROM proyectos_futuros WHERE id = %s", (fila['id'],))
                     conexion.commit()
                     conexion.close()
                     st.rerun()
         st.markdown("<hr style='margin:0.5rem 0px;'/>", unsafe_allow_html=True)
-        
+
 elif opcion_menu == "🚗 Mi Coche":
     st.title("🚗 Dashboard del Vehículo")
     
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     config_coche = pd.read_sql_query("SELECT letra_mensual FROM configuracion_coche WHERE id=1", conexion)
     letra_val = config_coche.iloc[0]['letra_mensual'] if not config_coche.empty else 0.0
     
     mes_actual = datetime.now().strftime("%Y-%m")
-    variables_df = pd.read_sql_query("SELECT * FROM movimientos_caja WHERE tipo_ingreso_gasto = 'Gasto Coche' AND fecha LIKE ?", conexion, params=(f"{mes_actual}%",))
+    variables_df = pd.read_sql_query("SELECT * FROM movimientos_caja WHERE tipo_ingreso_gasto = 'Gasto Coche' AND fecha LIKE %s", conexion, params=(f"{mes_actual}%",))
     conexion.close()
     
     gasto_var_total = variables_df['monto'].sum() if not variables_df.empty else 0.0
@@ -946,8 +970,9 @@ elif opcion_menu == "🚗 Mi Coche":
             nueva_letra = st.number_input("Letra del Coche (€/mes)", min_value=0.0, step=10.0, value=float(letra_val))
             
             if st.form_submit_button("Guardar Letra"):
-                conexion = sqlite3.connect(DB_PATH, timeout=10)
-                conexion.execute("UPDATE configuracion_coche SET letra_mensual=? WHERE id=1", (nueva_letra,))
+                conexion = init_connection()
+                cursor = conexion.cursor()
+                cursor.execute("UPDATE configuracion_coche SET letra_mensual=%s WHERE id=1", (nueva_letra,))
                 conexion.commit()
                 conexion.close()
                 st.success("Letra del coche actualizada.")
@@ -963,8 +988,9 @@ elif opcion_menu == "🚗 Mi Coche":
             
             if st.form_submit_button("Registrar Gasto") and monto_coche > 0:
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
-                conexion = sqlite3.connect(DB_PATH, timeout=10)
-                conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Coche', ?)",
+                conexion = init_connection()
+                cursor = conexion.cursor()
+                cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Coche', %s)",
                                (fecha_actual, f"Coche: {tipo_gasto_coche}", monto_coche, metodo_coche))
                 conexion.commit()
                 conexion.close()
@@ -978,8 +1004,9 @@ elif opcion_menu == "🚗 Mi Coche":
             with c1: st.write(f"📅 **{row['fecha']}** | {row['concepto']} -> **{row['monto']:,.2f} €** ({row['metodo_pago']})")
             with c2:
                 if st.button("❌", key=f"del_coche_{row['id']}"):
-                    conexion = sqlite3.connect(DB_PATH, timeout=10)
-                    conexion.execute("DELETE FROM movimientos_caja WHERE id=?", (row['id'],))
+                    conexion = init_connection()
+                    cursor = conexion.cursor()
+                    cursor.execute("DELETE FROM movimientos_caja WHERE id=%s", (row['id'],))
                     conexion.commit()
                     conexion.close()
                     st.rerun()
@@ -987,27 +1014,24 @@ elif opcion_menu == "🚗 Mi Coche":
     else:
         st.info("No has registrado gasolina ni limpiezas este mes.")
 
-# --- NUEVA PESTAÑA: ANÁLISIS Y RESUMEN ANUAL ---
 elif opcion_menu == "📊 Análisis y Resumen Anual":
     st.title("📊 Análisis Financiero y Resumen Anual")
     st.info("Visualiza la evolución de tus ingresos y gastos a lo largo del tiempo. (Los 'Saldos Iniciales' están excluidos para no distorsionar las métricas reales).")
     
-    conexion = sqlite3.connect(DB_PATH, timeout=10)
+    conexion = init_connection()
     df_movs = pd.read_sql_query("SELECT * FROM movimientos_caja", conexion)
     conexion.close()
     
     if df_movs.empty:
         st.warning("Aún no hay suficientes datos para mostrar analíticas.")
     else:
-        # Excluir ingresos fantasma
         df_movs = df_movs[~df_movs['concepto'].str.startswith('Saldo Inicial:')]
         
         if df_movs.empty:
             st.warning("Solo tienes Saldos Iniciales registrados. Empieza a registrar gastos diarios para ver las gráficas.")
         else:
-            df_movs['mes'] = df_movs['fecha'].str[:7] # Formato YYYY-MM
+            df_movs['mes'] = df_movs['fecha'].str[:7] 
             
-            # Clasificación inteligente de categorías
             def clasificar_gasto(row):
                 tipo = row['tipo_ingreso_gasto']
                 concepto = row['concepto']
@@ -1037,8 +1061,6 @@ elif opcion_menu == "📊 Análisis y Resumen Anual":
                 st.subheader("📅 Tabla Contable Detallada")
                 pivot_display = pivot_gastos.copy()
                 pivot_display['TOTAL MES'] = pivot_display.sum(axis=1)
-                
-                # ---> AQUÍ ESTÁ LA CORRECCIÓN DE LA TABLA (width='stretch') <---
                 st.dataframe(pivot_display.style.format("{:.2f} €"), width='stretch')
             else:
                 st.info("No hay gastos registrados para analizar.")
@@ -1104,7 +1126,6 @@ elif opcion_menu == "📷 Lector de Tickets IA":
             with c1: super_det = st.selectbox("Supermercado:", LISTA_SUPERS, index=LISTA_SUPERS.index(datos.get('supermercado', 'Otros')) if datos.get('supermercado', 'Otros') in LISTA_SUPERS else 0)
             with c2: pago_det = st.selectbox("Pago:", ["Efectivo", "Tarjeta/PayPal"], index=0 if datos.get('metodo_pago', 'Tarjeta/PayPal') == "Efectivo" else 1)
             
-            # --- CONVERTIMOS LAS TABLAS EN EDITABLES (st.data_editor) ---
             st.info("💡 **Revisión Manual:** Haz doble clic en cualquier celda para corregir a la IA antes de inyectar. También puedes añadir o borrar filas.")
             
             c_l, c_r = st.columns(2)
@@ -1112,7 +1133,6 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                 st.markdown("**🛒 Alimentación**")
                 df_desp = pd.DataFrame(datos.get('articulos_despensa', []))
                 if not df_desp.empty: 
-                    # El parámetro num_rows="dynamic" te permite añadir/borrar filas
                     df_desp = st.data_editor(df_desp, width='stretch', num_rows="dynamic", key="edit_desp")
             with c_r:
                 st.markdown("**🧼 Hogar / Otros**")
@@ -1121,11 +1141,10 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                     df_hogar = st.data_editor(df_hogar, width='stretch', num_rows="dynamic", key="edit_hogar")
                 
             if st.button("🔨 Inyectar Todo al Sistema"):
-                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                conexion = init_connection()
                 cursor = conexion.cursor()
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 
-                # Leemos los datos directamente de los DataFrames EDITADOS por ti
                 if not df_desp.empty:
                     for item in df_desp.to_dict('records'):
                         prod_raw = item.get('producto')
@@ -1140,9 +1159,9 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                         precio_raw = item.get('precio_unitario')
                         precio = float(precio_raw) if pd.notna(precio_raw) else 0.0
                         
-                        cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, ?, ?, ?, ?, ?, 'Armario')", 
+                        cursor.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (%s, %s, %s, %s, %s, %s, 'Armario')", 
                                        (producto, super_det, unidades, peso, precio, fecha_actual))
-                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
+                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', %s)", 
                                        (fecha_actual, f"Alimento: {producto.capitalize()}", unidades * precio, pago_det))
                 
                 if not df_hogar.empty:
@@ -1153,17 +1172,18 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                         precio_t_raw = gasto.get('precio_total')
                         precio_total_hogar = float(precio_t_raw) if pd.notna(precio_t_raw) else 0.0
                         
-                        cursor.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, ?, 1, 1.0, ?, ?)", 
+                        cursor.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, %s, %s, 1.0, %s, %s)", 
                                        (concepto_hogar.lower(), super_det, precio_total_hogar, fecha_actual))
-                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (?, ?, ?, 'Gasto Habitual', ?)", 
+                        cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', %s)", 
                                        (fecha_actual, f"Bazar/Utensilio: {concepto_hogar}", precio_total_hogar, pago_det))
                 
                 conexion.commit()
                 conexion.close()
                 del st.session_state['resultado_json_ticket']
                 st.rerun()
+
 elif opcion_menu == "⚙️ Configuración y Arranque":
-    st.title("⚙️ Carga de Saldos Iniciales (Onboarding)")
+    st.title("⚙️ Carga de Saldos Iniciales y Mantenimiento")
     st.info("💡 Usa esta pestaña solo para configurar tu punto de partida. Carga lo que tienes en casa hoy. Una vez termines de volcar tu casa, puedes ignorar o borrar esta pestaña.")
     
     col1, col2 = st.columns(2)
@@ -1176,14 +1196,15 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
             saldo_hucha_ini = st.number_input("Dinero real en tu Cartera/Hucha (€)", min_value=0.0, step=50.0)
             
             if st.form_submit_button("Cargar Dinero al Sistema"):
-                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                conexion = init_connection()
+                cursor = conexion.cursor()
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 
                 if saldo_banco_ini > 0:
-                    conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago, subcuenta_extra) VALUES (?, 'Saldo Inicial: Banco', ?, 'Ingreso Extra', 'Tarjeta/PayPal', 'Extra-Banco')", 
+                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago, subcuenta_extra) VALUES (%s, 'Saldo Inicial: Banco', %s, 'Ingreso Extra', 'Tarjeta/PayPal', 'Extra-Banco')", 
                                      (fecha_actual, saldo_banco_ini))
                 if saldo_hucha_ini > 0:
-                    conexion.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago, subcuenta_extra) VALUES (?, 'Saldo Inicial: Efectivo', ?, 'Ingreso Extra', 'Efectivo', 'Extra-Efectivo')", 
+                    cursor.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago, subcuenta_extra) VALUES (%s, 'Saldo Inicial: Efectivo', %s, 'Ingreso Extra', 'Efectivo', 'Extra-Efectivo')", 
                                      (fecha_actual, saldo_hucha_ini))
                 
                 conexion.commit()
@@ -1203,35 +1224,43 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
             
             if st.form_submit_button("Cargar a Inventario") and nombre_inv:
                 tabla = "despensa" if tipo_inv == "Despensa" else "utensilios"
-                conexion = sqlite3.connect(DB_PATH, timeout=10)
+                conexion = init_connection()
+                cursor = conexion.cursor()
                 
                 if tabla == "despensa":
-                    conexion.execute(f"INSERT INTO {tabla} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (?, 'Stock Inicial', ?, 1.0, 0.0, ?, ?)",
+                    cursor.execute(f"INSERT INTO {tabla} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (%s, 'Stock Inicial', %s, 1.0, 0.0, %s, %s)",
                                    (nombre_inv.strip().lower(), unidades_inv, datetime.now().strftime("%Y-%m-%d"), ubicacion_inv))
                 else:
-                    conexion.execute(f"INSERT INTO {tabla} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (?, 'Stock Inicial', ?, 1.0, 0.0, ?)",
+                    cursor.execute(f"INSERT INTO {tabla} (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, 'Stock Inicial', %s, 1.0, 0.0, %s)",
                                    (nombre_inv.strip().lower(), unidades_inv, datetime.now().strftime("%Y-%m-%d")))
                 
                 conexion.commit()
                 conexion.close()
                 st.success(f"{unidades_inv}x {nombre_inv.capitalize()} añadidos a tu {tipo_inv}.")
                 st.rerun()
-
-    # Corrección aquí: ahora está alineado dentro del bloque "elif" de forma correcta
+                
     st.markdown("---")
     st.header("💣 3. Reset de Fábrica (Pase a Producción)")
-    st.caption("Al pulsar este botón, la aplicación destruirá el archivo de la base de datos por completo y creará uno nuevo y virgen. ¡Úsalo solo para empezar de cero mañana!")
+    st.caption("Al pulsar este botón, la aplicación destruirá todas las tablas de PostgreSQL y las volverá a crear vírgenes. ¡Úsalo solo para empezar de cero!")
     
     if st.button("🚨 BORRAR TODO Y EMPEZAR DE CERO"):
-        # Nos aseguramos de cerrar cualquier conexión abierta por si acaso
         try:
+            conexion = init_connection()
+            conexion.autocommit = True
+            cursor = conexion.cursor()
+            
+            # Destrucción en cascada de todas las tablas en Postgres
+            tablas = [
+                "movimientos_caja", "despensa", "consumo_alimentos", 
+                "proyectos_futuros", "gastos_recurrentes", "compras_plazos", 
+                "utensilios", "lista_compra", "configuracion_coche", 
+                "previsiones_anuales", "fondo_emergencia"
+            ]
+            for t in tablas:
+                cursor.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
+                
             conexion.close()
-        except:
-            pass
-            
-        # Borramos el archivo físico de la base de datos
-        if os.path.exists(DB_PATH):
-            os.remove(DB_PATH)
-            
-        st.success("¡Base de datos vaporizada! La app se está reiniciando...")
-        st.rerun()
+            st.success("¡Base de datos vaporizada en Supabase! La app se está reiniciando...")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error borrando la base de datos: {e}")
