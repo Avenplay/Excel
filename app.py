@@ -207,7 +207,6 @@ if opcion_menu == "💵 Control de Caja":
     st.title("🧠 Tu Copiloto Financiero Inteligente")
     st.markdown("---")
     
-    # 🚀 LAZY LOADING: Solo calculamos esto si estás en esta pantalla, y abriendo la base de datos solo 1 vez
     conexion = init_connection()
     cursor = conexion.cursor()
     cursor.execute("""
@@ -249,7 +248,7 @@ if opcion_menu == "💵 Control de Caja":
         categoria_gasto = st.selectbox("Categoría del Gasto", ["Alimentación", "Hogar", "Gastos Fijos", "Gasto Excepcional"])
         
         if categoria_gasto in ["Alimentación", "Hogar"]:
-            with st.form("form_gasto_inventario"):
+            with st.form("form_gasto_inventario", clear_on_submit=True):
                 st.caption("Al guardar, el importe se restará del banco y los artículos irán a su despensa correspondiente.")
                 concepto_g = st.text_input("Producto / Concepto")
                 c_a, c_b = st.columns(2)
@@ -285,7 +284,7 @@ if opcion_menu == "💵 Control de Caja":
                     st.rerun()
 
         elif categoria_gasto == "Gastos Fijos":
-            with st.form("form_gasto_fijo"):
+            with st.form("form_gasto_fijo", clear_on_submit=True):
                 st.caption("Al guardar, se cobrará hoy y se añadirá a la pestaña 'Gastos Recurrentes' para el futuro.")
                 concepto_g = st.text_input("Concepto del Gasto Fijo")
                 monto_g = st.number_input("Importe (€)", min_value=0.0, step=0.50)
@@ -306,7 +305,7 @@ if opcion_menu == "💵 Control de Caja":
                         conexion_w.close()
 
         else:
-            with st.form("form_gasto_excepcional"):
+            with st.form("form_gasto_excepcional", clear_on_submit=True):
                 concepto_g = st.text_input("Concepto (Ej. Taller, Cena)")
                 monto_g = st.number_input("Importe (€)", min_value=0.0, step=0.50)
                 metodo_g = st.selectbox("Pago", ["Tarjeta/PayPal", "Efectivo"])
@@ -317,7 +316,7 @@ if opcion_menu == "💵 Control de Caja":
 
     with col_r:
         st.header("💰 Registrar Entrada de Dinero")
-        with st.form("form_ingreso"):
+        with st.form("form_ingreso", clear_on_submit=True):
             concepto_i = st.text_input("Concepto")
             monto_i = st.number_input("Importe (€)", min_value=0.0, step=50.0)
             tipo_i = st.selectbox("Categoría", ["Ingreso Fijo", "Ingreso Extra"])
@@ -373,7 +372,6 @@ if opcion_menu == "💵 Control de Caja":
 elif opcion_menu == "🍏 Despensa (Alimentos)":
     st.title("🛒 Despensa de Alimentos")
     
-    # 🚀 LAZY LOADING de Despensa
     conexion = init_connection()
     cursor = conexion.cursor()
     cursor.execute("""
@@ -391,7 +389,7 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
     with col1: st.metric("🥘 Comida Consumida (Acumulado)", f"{coste_comida:,.2f} €")
     with col2: st.metric("🗑️ Mermas / Tirado", f"{mermas_comida:,.2f} €")
         
-    with st.form("form_despensa_manual"):
+    with st.form("form_despensa_manual", clear_on_submit=True):
         st.subheader("➕ Añadir Regalo o Stock a Coste Cero")
         st.caption("Usa esto para tuppers, regalos o comida que no afectará a tus gastos.")
         col_d1, col_d2, col_d3 = st.columns(3)
@@ -511,7 +509,6 @@ elif opcion_menu == "🍏 Despensa (Alimentos)":
 elif opcion_menu == "🏠 Utensilios (Hogar)":
     st.title("🏠 Inventario de Utensilios y Limpieza")
     
-    # 🚀 LAZY LOADING de Hogar
     conexion = init_connection()
     cursor = conexion.cursor()
     cursor.execute("SELECT COALESCE(SUM(unidades_actuales * precio_unitario), 0) FROM utensilios")
@@ -521,7 +518,7 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
     
     st.metric(label="🧴 Valor Inmovilizado en Hogar", value=f"{inmovilizado_hogar:,.2f} €")
     
-    with st.form("form_utensilios_manual"):
+    with st.form("form_utensilios_manual", clear_on_submit=True):
         st.subheader("➕ Añadir stock manual (Sin registrar pago)")
         col1, col2, col3 = st.columns([4, 3, 3])
         with col1: nombre_u = st.text_input("Producto")
@@ -596,7 +593,7 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
 elif opcion_menu == "🛒 Lista de la Compra":
     st.title("🛒 Lista de la Compra Inteligente")
     
-    with st.form("form_lista_manual"):
+    with st.form("form_lista_manual", clear_on_submit=True):
         col1, col2, col3 = st.columns([5, 3, 2])
         with col1: prod_manual = st.text_input("Añadir producto suelto")
         with col2: super_manual = st.selectbox("Supermercado", LISTA_SUPERS)
@@ -659,7 +656,7 @@ elif opcion_menu == "🔄 Gastos Recurrentes":
     col_izq, col_der = st.columns([4, 6])
     
     with col_izq:
-        with st.form("form_add_recurrente"):
+        with st.form("form_add_recurrente", clear_on_submit=True):
             nombre_fijo = st.text_input("Nombre del Gasto").strip()
             monto_fijo = st.number_input("Importe Mensual (€)", min_value=0.1, step=5.0)
             if st.form_submit_button("Registrar") and nombre_fijo and monto_fijo > 0:
@@ -695,7 +692,7 @@ elif opcion_menu == "💳 Compras a Plazos":
     col_l, col_r = st.columns([4, 6])
     
     with col_l:
-        with st.form("form_plazos"):
+        with st.form("form_plazos", clear_on_submit=True):
             art_nombre = st.text_input("Artículo").strip()
             art_total = st.number_input("Coste Total (€)", min_value=1.0, step=50.0)
             art_meses = st.number_input("Meses", min_value=1, step=1, value=12)
@@ -738,7 +735,7 @@ elif opcion_menu == "🗓️ Previsiones Anuales":
     col_p1, col_p2 = st.columns([4, 6])
     
     with col_p1:
-        with st.form("form_nueva_prevision"):
+        with st.form("form_nueva_prevision", clear_on_submit=True):
             st.subheader("➕ Nueva Previsión")
             prev_concepto = st.text_input("Concepto (Ej. Seguro Coche, IBI)").strip()
             prev_monto = st.number_input("Coste Anual Estimado (€)", min_value=10.0, step=50.0)
@@ -800,7 +797,6 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     st.title("🔮 Consultor de Viabilidad y Airbag")
     st.caption("Descubre cuánto dinero libre tienes realmente y blinda tu economía ante imprevistos.")
     
-    # 🚀 LAZY LOADING de Proyectos: Abrimos 1 conexión, traemos TODO, cerramos.
     conexion = init_connection()
     cursor = conexion.cursor()
     
@@ -888,7 +884,7 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
     if progreso_airbag < 100.0:
         st.warning("⚠️ **Atención:** Tu Airbag Financiero aún no está lleno. Te recomendamos encarecidamente priorizar este fondo antes de lanzar proyectos de capricho.")
     
-    with st.form("form_proyecto"):
+    with st.form("form_proyecto", clear_on_submit=True):
         st.subheader("🚀 Lanzar un Proyecto Finalista (Ej. Congelador, Viaje)")
         c1, c2, c3 = st.columns(3)
         with c1: proj_name = st.text_input("Proyecto")
@@ -959,7 +955,6 @@ elif opcion_menu == "🔮 Previsiones y Proyectos":
 elif opcion_menu == "🚗 Mi Coche":
     st.title("🚗 Dashboard del Vehículo")
     
-    # 🚀 LAZY LOADING de Mi Coche
     conexion = init_connection()
     config_coche = pd.read_sql_query("SELECT letra_mensual FROM configuracion_coche WHERE id=1", conexion)
     letra_val = config_coche.iloc[0]['letra_mensual'] if not config_coche.empty else 0.0
@@ -982,7 +977,7 @@ elif opcion_menu == "🚗 Mi Coche":
     
     with col_izq:
         st.header("⚙️ Configuración Fija")
-        with st.form("form_coche_fijos"):
+        with st.form("form_coche_fijos", clear_on_submit=True):
             st.caption("Ajusta tu letra mensual para el cálculo estadístico.")
             nueva_letra = st.number_input("Letra del Coche (€/mes)", min_value=0.0, step=10.0, value=float(letra_val))
             
@@ -997,7 +992,7 @@ elif opcion_menu == "🚗 Mi Coche":
                 
     with col_der:
         st.header("⛽ Añadir Gasto Variable")
-        with st.form("form_coche_var"):
+        with st.form("form_coche_var", clear_on_submit=True):
             st.caption("Estos gastos se restarán inmediatamente de tu Banco o Efectivo.")
             tipo_gasto_coche = st.selectbox("Categoría", ["Gasolina", "Lavadero / Limpieza", "Taller / Mantenimiento", "Peaje / Parking", "Otro"])
             monto_coche = st.number_input("Importe (€)", min_value=0.0, step=5.0)
@@ -1207,7 +1202,7 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
     
     with col1:
         st.header("💰 1. Dinero Inicial")
-        with st.form("form_saldos_iniciales"):
+        with st.form("form_saldos_iniciales", clear_on_submit=True):
             st.caption("Esto inyectará dinero en el sistema de forma 'fantasma' (no aparecerá en el historial de gastos/ingresos para mantenerlo limpio).")
             saldo_banco_ini = st.number_input("Dinero real en tu Banco (€)", min_value=0.0, step=100.0)
             saldo_hucha_ini = st.number_input("Dinero real en tu Cartera/Hucha (€)", min_value=0.0, step=50.0)
@@ -1231,7 +1226,7 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
 
     with col2:
         st.header("📦 2. Inventario Rápido")
-        with st.form("form_inv_rapido"):
+        with st.form("form_inv_rapido", clear_on_submit=True):
             st.caption("Carga artículos a coste 0.00 € y Origen 'Stock Inicial' para no alterar tus estadísticas financieras de consumo de este mes.")
             
             tipo_inv = st.radio("¿Dónde lo guardamos?", ["Despensa", "Hogar"], horizontal=True)
