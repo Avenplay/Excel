@@ -1271,6 +1271,15 @@ elif opcion_menu == "⚙️ Configuración y Arranque":
                 cursor_w.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
                 
             conexion_w.close()
+            
+            # ---> ESTA ES LA LÍNEA MÁGICA QUE FALTABA <---
+            # Le dice a la caché de Streamlit que se resetee para que vuelva a crear las tablas
+            arrancar_sistema.clear()
+            
+            st.success("¡Base de datos vaporizada en Supabase! La app se está reiniciando...")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error borrando la base de datos: {e}")
             st.success("¡Base de datos vaporizada en Supabase! La app se está reiniciando...")
             st.rerun()
         except Exception as e:
