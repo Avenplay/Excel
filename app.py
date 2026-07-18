@@ -1128,11 +1128,11 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                         client = genai.Client(api_key=api_key)
                         imagen.save("temp_ticket.png")
                         
-                        # --- NUEVO PROMPT: Ahora obliga a la IA a buscar peso_kg también en Hogar ---
+                        # --- NUEVO PROMPT: Le exigimos 'precio_total' para que la app haga la división matemática correcta ---
                         prompt = """Analiza este ticket minuciosamente y devuelve ESTRICTAMENTE un objeto JSON.
-                        REGLA 1: Clasifica impecablemente. 'articulos_despensa' es SOLO comida/bebida. 'gastos_hogar' es TODO lo demás (limpieza, higiene, etc.).
-                        REGLA 2: Nombres GENÉRICOS. 'detergente gel masella colon 12' -> 'Detergente'.
-                        Las claves del JSON DEBEN ser: supermercado, metodo_pago, articulos_despensa (lista de objetos: producto, unidades, peso_kg, precio_unitario), y gastos_hogar (lista de objetos: producto, unidades, peso_kg, precio_unitario). Sin explicaciones, solo JSON."""
+                        REGLA 1: Clasifica impecablemente los artículos. 'articulos_despensa' es SOLO comida y bebida. 'gastos_hogar' es TODO lo demás (limpieza, detergentes, higiene personal, papel higiénico, menaje, etc.).
+                        REGLA 2: NO copies el nombre literal ni abreviaturas raras del ticket. Traduce y resume el producto a su nombre GENÉRICO. Ejemplo: 'detergente gel masella colon 12' -> 'Detergente', 'migas de atun a girasol fyc 650' -> 'Lata de atún', 'pap hig compact' -> 'Papel higiénico'.
+                        Las claves del JSON DEBEN ser: supermercado, metodo_pago, articulos_despensa (lista de objetos: producto, unidades, peso_kg, precio_total), y gastos_hogar (lista de objetos: producto, unidades, peso_kg, precio_total). Sin explicaciones, solo JSON."""
                         
                         uploaded_file = client.files.upload(file="temp_ticket.png")
                         response = client.models.generate_content(model='gemini-2.5-flash', contents=[uploaded_file, prompt])
@@ -1160,7 +1160,7 @@ elif opcion_menu == "📷 Lector de Tickets IA":
             with c1: super_det = st.selectbox("Supermercado:", LISTA_SUPERS, index=LISTA_SUPERS.index(datos.get('supermercado', 'Otros')) if datos.get('supermercado', 'Otros') in LISTA_SUPERS else 0)
             with c2: pago_det = st.selectbox("Pago:", ["Efectivo", "Tarjeta/PayPal"], index=0 if datos.get('metodo_pago', 'Tarjeta/PayPal') == "Efectivo" else 1)
             
-            st.info("💡 **Revisión Manual:** Haz doble clic en cualquier celda para corregir a la IA antes de inyectar. También puedes añadir o borrar filas.")
+            st.info("💡 **Revisión Manual:** Haz doble clic en cualquier celda para corregir a la IA antes de inyectar. Si cambias las unidades, el sistema calculará automáticamente el coste unitario sin cobrarte de más en el banco.")
             
             c_l, c_r = st.columns(2)
             with c_l:
@@ -1179,44 +1179,50 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                 cursor_w = conexion_w.cursor()
                 fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 
+                # --- NUEVA LÓGICA DE INYECCIÓN (Calcula el unitario sin re-multiplicar) ---
                 if not df_desp.empty:
                     for item in df_desp.to_dict('records'):
                         prod_raw = item.get('producto')
                         producto = str(prod_raw).lower().strip() if pd.notna(prod_raw) else 'alimento sin clasificar'
                         
                         unid_raw = item.get('unidades')
-                        unidades = int(unid_raw) if pd.notna(unid_raw) else 1
+                        unidades = int(unid_raw) if pd.notna(unid_raw) and int(unid_raw) > 0 else 1
                         
                         peso_raw = item.get('peso_kg')
                         peso = float(peso_raw) if pd.notna(peso_raw) else 1.0
                         
-                        precio_raw = item.get('precio_unitario')
-                        precio = float(precio_raw) if pd.notna(precio_raw) else 0.0
+                        precio_t_raw = item.get('precio_total')
+                        precio_total_linea = float(precio_t_raw) if pd.notna(precio_t_raw) else 0.0
+                        
+                        # MATEMÁTICA CORRECTA: Sacamos el unitario dividiendo
+                        precio_unitario_real = precio_total_linea / unidades
                         
                         cursor_w.execute("INSERT INTO despensa (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra, ubicacion) VALUES (%s, %s, %s, %s, %s, %s, 'Armario')", 
-                                       (producto, super_det, unidades, peso, precio, fecha_actual))
+                                       (producto, super_det, unidades, peso, precio_unitario_real, fecha_actual))
                         cursor_w.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', %s)", 
-                                       (fecha_actual, f"Alimento: {producto.capitalize()}", unidades * precio, pago_det))
+                                       (fecha_actual, f"Alimento: {producto.capitalize()}", precio_total_linea, pago_det))
                 
                 if not df_hogar.empty:
                     for gasto in df_hogar.to_dict('records'):
-                        # --- CÓDIGO CORREGIDO PARA EVITAR EL ERROR INDEXERROR ---
-                        conc_raw = gasto.get('producto')  # Ahora la IA devuelve 'producto', no 'concepto'
+                        conc_raw = gasto.get('producto')
                         concepto_hogar = str(conc_raw).capitalize() if pd.notna(conc_raw) else 'Utensilio desconocido'
                         
                         unid_raw_h = gasto.get('unidades')
-                        unidades_h = int(unid_raw_h) if pd.notna(unid_raw_h) else 1
+                        unidades_h = int(unid_raw_h) if pd.notna(unid_raw_h) and int(unid_raw_h) > 0 else 1
                         
                         peso_raw_h = gasto.get('peso_kg')
                         peso_h = float(peso_raw_h) if pd.notna(peso_raw_h) else 1.0
                         
-                        precio_t_raw = gasto.get('precio_unitario')
+                        precio_t_raw = gasto.get('precio_total')
                         precio_total_hogar = float(precio_t_raw) if pd.notna(precio_t_raw) else 0.0
                         
+                        # MATEMÁTICA CORRECTA: Sacamos el unitario dividiendo
+                        precio_unitario_h = precio_total_hogar / unidades_h
+                        
                         cursor_w.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, %s, %s, %s, %s, %s)", 
-                                       (concepto_hogar.lower(), super_det, unidades_h, peso_h, precio_total_hogar, fecha_actual))
+                                       (concepto_hogar.lower(), super_det, unidades_h, peso_h, precio_unitario_h, fecha_actual))
                         cursor_w.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', %s)", 
-                                       (fecha_actual, f"Bazar/Utensilio: {concepto_hogar}", unidades_h * precio_total_hogar, pago_det))
+                                       (fecha_actual, f"Bazar/Utensilio: {concepto_hogar}", precio_total_hogar, pago_det))
                 
                 conexion_w.commit()
                 conexion_w.close()
