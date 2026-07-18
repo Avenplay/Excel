@@ -320,10 +320,20 @@ if opcion_menu == "💵 Control de Caja":
             concepto_i = st.text_input("Concepto")
             monto_i = st.number_input("Importe (€)", min_value=0.0, step=50.0)
             tipo_i = st.selectbox("Categoría", ["Ingreso Fijo", "Ingreso Extra"])
-            subcuenta_i = st.selectbox("Destino Extra", ["N/A", "Extra-Efectivo", "Extra-Banco"]) if tipo_i == "Ingreso Extra" else "N/A"
-            metodo_i = "Efectivo" if subcuenta_i == "Extra-Efectivo" else "Tarjeta/PayPal"
+            
+            # Lo mostramos siempre para evitar el "efecto fantasma" del formulario
+            subcuenta_i = st.selectbox("Destino Extra", ["N/A", "Extra-Efectivo", "Extra-Banco"], help="Solo se aplicará internamente si eliges 'Ingreso Extra'")
+            
             if st.form_submit_button("Guardar Entrada") and concepto_i and monto_i > 0:
-                registrar_movimiento(concepto_i, monto_i, tipo_i, metodo_i, subcuenta_i)
+                # El "cerebro" corrige la lógica automáticamente sin importar lo que ponga la caja
+                if tipo_i == "Ingreso Fijo":
+                    subcuenta_final = "N/A"
+                    metodo_i = "Tarjeta/PayPal"
+                else:
+                    subcuenta_final = subcuenta_i
+                    metodo_i = "Efectivo" if subcuenta_final == "Extra-Efectivo" else "Tarjeta/PayPal"
+                    
+                registrar_movimiento(concepto_i, monto_i, tipo_i, metodo_i, subcuenta_final)
                 st.rerun()
                 
     st.markdown("---")
