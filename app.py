@@ -664,7 +664,7 @@ elif opcion_menu == "🛒 Lista de la Compra":
     else: 
         st.success("¡Tu lista de la compra está vacía!")
 
-eelif opcion_menu == "🔄 Gastos Recurrentes":
+elif opcion_menu == "🔄 Gastos Recurrentes":
     st.title("🔄 Gestión de Gastos Fijos")
     col_izq, col_der = st.columns([4, 6])
     
