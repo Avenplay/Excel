@@ -535,13 +535,16 @@ elif opcion_menu == "🏠 Utensilios (Hogar)":
         with col2: super_u = st.selectbox("Origen", LISTA_SUPERS)
         with col3:
             unidades_u = st.number_input("Unidades", min_value=1, step=1)
+            # AÑADIMOS EL INPUT DE PESO/LITROS AL HOGAR
+            peso_u = st.number_input("Peso/L por ud.", min_value=0.01, value=1.0)
             precio_u = st.number_input("Precio/Ud aprox (€)", min_value=0.0, step=0.1)
             
         if st.form_submit_button("Añadir al Inventario") and nombre_u:
             conexion_w = init_connection()
             cursor_w = conexion_w.cursor()
-            cursor_w.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, %s, %s, 1.0, %s, %s)",
-                           (nombre_u.strip().lower(), super_u, unidades_u, precio_u, datetime.now().strftime("%Y-%m-%d")))
+            # Y SE LO PASAMOS A LA BASE DE DATOS
+            cursor_w.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, %s, %s, %s, %s, %s)",
+                           (nombre_u.strip().lower(), super_u, unidades_u, peso_u, precio_u, datetime.now().strftime("%Y-%m-%d")))
             conexion_w.commit()
             conexion_w.close()
             st.rerun()
@@ -661,7 +664,7 @@ elif opcion_menu == "🛒 Lista de la Compra":
     else: 
         st.success("¡Tu lista de la compra está vacía!")
 
-elif opcion_menu == "🔄 Gastos Recurrentes":
+eelif opcion_menu == "🔄 Gastos Recurrentes":
     st.title("🔄 Gestión de Gastos Fijos")
     col_izq, col_der = st.columns([4, 6])
     
@@ -673,7 +676,15 @@ elif opcion_menu == "🔄 Gastos Recurrentes":
                 try:
                     conexion_w = init_connection()
                     cursor_w = conexion_w.cursor()
+                    
+                    # 1. Guarda la regla para el futuro
                     cursor_w.execute("INSERT INTO gastos_recurrentes (nombre_gasto, monto) VALUES (%s, %s)", (nombre_fijo, monto_fijo))
+                    
+                    # 2. Pasa el cargo inmediatamente en el mes actual (FALTABA ESTO)
+                    fecha_actual = datetime.now().strftime("%Y-%m-%d")
+                    cursor_w.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', 'Tarjeta/PayPal')", 
+                                     (fecha_actual, f"Fijo Automático: {nombre_fijo}", monto_fijo))
+                    
                     conexion_w.commit()
                     conexion_w.close()
                     st.rerun()
@@ -1117,10 +1128,11 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                         client = genai.Client(api_key=api_key)
                         imagen.save("temp_ticket.png")
                         
+                        # --- NUEVO PROMPT: Ahora obliga a la IA a buscar peso_kg también en Hogar ---
                         prompt = """Analiza este ticket minuciosamente y devuelve ESTRICTAMENTE un objeto JSON.
-                        REGLA 1: Clasifica impecablemente los artículos. 'articulos_despensa' es SOLO comida y bebida. 'gastos_hogar' es TODO lo demás (limpieza, detergentes, higiene personal, papel higiénico, menaje, etc.).
-                        REGLA 2: NO copies el nombre literal ni abreviaturas raras del ticket. Traduce y resume el producto a su nombre GENÉRICO. Ejemplo: 'detergente gel masella colon 12' -> 'Detergente', 'migas de atun a girasol fyc 650' -> 'Lata de atún', 'pap hig compact' -> 'Papel higiénico'.
-                        Las claves del JSON DEBEN ser: supermercado, metodo_pago, articulos_despensa (lista de objetos: producto, unidades, peso_kg, precio_unitario), y gastos_hogar (lista: concepto, precio_total). Sin explicaciones, solo JSON."""
+                        REGLA 1: Clasifica impecablemente. 'articulos_despensa' es SOLO comida/bebida. 'gastos_hogar' es TODO lo demás (limpieza, higiene, etc.).
+                        REGLA 2: Nombres GENÉRICOS. 'detergente gel masella colon 12' -> 'Detergente'.
+                        Las claves del JSON DEBEN ser: supermercado, metodo_pago, articulos_despensa (lista de objetos: producto, unidades, peso_kg, precio_unitario), y gastos_hogar (lista de objetos: producto, unidades, peso_kg, precio_unitario). Sin explicaciones, solo JSON."""
                         
                         uploaded_file = client.files.upload(file="temp_ticket.png")
                         response = client.models.generate_content(model='gemini-2.5-flash', contents=[uploaded_file, prompt])
@@ -1188,16 +1200,23 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                 
                 if not df_hogar.empty:
                     for gasto in df_hogar.to_dict('records'):
-                        conc_raw = gasto.get('concepto')
+                        # --- CÓDIGO CORREGIDO PARA EVITAR EL ERROR INDEXERROR ---
+                        conc_raw = gasto.get('producto')  # Ahora la IA devuelve 'producto', no 'concepto'
                         concepto_hogar = str(conc_raw).capitalize() if pd.notna(conc_raw) else 'Utensilio desconocido'
                         
-                        precio_t_raw = gasto.get('precio_total')
+                        unid_raw_h = gasto.get('unidades')
+                        unidades_h = int(unid_raw_h) if pd.notna(unid_raw_h) else 1
+                        
+                        peso_raw_h = gasto.get('peso_kg')
+                        peso_h = float(peso_raw_h) if pd.notna(peso_raw_h) else 1.0
+                        
+                        precio_t_raw = gasto.get('precio_unitario')
                         precio_total_hogar = float(precio_t_raw) if pd.notna(precio_t_raw) else 0.0
                         
-                        cursor_w.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, %s, %s, 1.0, %s, %s)", 
-                                       (concepto_hogar.lower(), super_det, precio_total_hogar, fecha_actual))
+                        cursor_w.execute("INSERT INTO utensilios (producto_generico, supermercado, unidades_actuales, peso_neto_kg, precio_unitario, fecha_compra) VALUES (%s, %s, %s, %s, %s, %s)", 
+                                       (concepto_hogar.lower(), super_det, unidades_h, peso_h, precio_total_hogar, fecha_actual))
                         cursor_w.execute("INSERT INTO movimientos_caja (fecha, concepto, monto, tipo_ingreso_gasto, metodo_pago) VALUES (%s, %s, %s, 'Gasto Habitual', %s)", 
-                                       (fecha_actual, f"Bazar/Utensilio: {concepto_hogar}", precio_total_hogar, pago_det))
+                                       (fecha_actual, f"Bazar/Utensilio: {concepto_hogar}", unidades_h * precio_total_hogar, pago_det))
                 
                 conexion_w.commit()
                 conexion_w.close()
