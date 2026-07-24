@@ -1128,10 +1128,10 @@ elif opcion_menu == "📷 Lector de Tickets IA":
                         client = genai.Client(api_key=api_key)
                         imagen.save("temp_ticket.png")
                         
-                        # --- NUEVO PROMPT: Le exigimos 'precio_total' para que la app haga la división matemática correcta ---
                         prompt = """Analiza este ticket minuciosamente y devuelve ESTRICTAMENTE un objeto JSON.
-                        REGLA 1: Clasifica impecablemente los artículos. 'articulos_despensa' es SOLO comida y bebida. 'gastos_hogar' es TODO lo demás (limpieza, detergentes, higiene personal, papel higiénico, menaje, etc.).
-                        REGLA 2: NO copies el nombre literal ni abreviaturas raras del ticket. Traduce y resume el producto a su nombre GENÉRICO. Ejemplo: 'detergente gel masella colon 12' -> 'Detergente', 'migas de atun a girasol fyc 650' -> 'Lata de atún', 'pap hig compact' -> 'Papel higiénico'.
+                        REGLA 1: Clasifica impecablemente los artículos. 'articulos_despensa' es SOLO comida y bebida. 'gastos_hogar' es TODO lo demás.
+                        REGLA 2: NO copies el nombre literal ni abreviaturas raras. Traduce y resume a su nombre GENÉRICO.
+                        REGLA 3: PRODUCTOS AL PESO (Fruta, Carne, etc.). Si ves algo como "PIÑA 2,186 kg 1,79 €/kg 3,91", pon SIEMPRE en 'unidades' un 1 (es una pieza física). En 'peso_kg' pon el peso total (2.186), y en 'precio_total' el importe final cobrado (3.91). IGNORA el precio por kilo, el sistema lo calcula solo.
                         Las claves del JSON DEBEN ser: supermercado, metodo_pago, articulos_despensa (lista de objetos: producto, unidades, peso_kg, precio_total), y gastos_hogar (lista de objetos: producto, unidades, peso_kg, precio_total). Sin explicaciones, solo JSON."""
                         
                         uploaded_file = client.files.upload(file="temp_ticket.png")
