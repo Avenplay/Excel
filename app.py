@@ -122,21 +122,31 @@ def ejecutar_automatizaciones():
     cursor.execute("SELECT nombre_gasto, monto FROM gastos_recurrentes")
     for nombre, monto in cursor.fetchall():
         concepto_cargo = f"Fijo Automático: {nombre}"
-        cursor.execute("SELECT COUNT(*) FROM movimientos_caja WHERE concepto = %s AND TO_CHAR(fecha, 'YYYY-MM') = %s", (concepto_cargo, mes_actual))
+        cursor.execute(
+            "SELECT COUNT(*) FROM movimientos_caja WHERE concepto = %s AND fecha::text LIKE %s", 
+            (concepto_cargo, f"{mes_actual}%")
+        )
         if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO movimientos_caja (fecha, tipo, categoria, concepto, monto, metodo_pago) VALUES (%s, 'Gasto', 'Fijo Recurrente', %s, %s, 'Tarjeta/PayPal')", 
-                           (datetime.now().date(), concepto_cargo, monto))
+            cursor.execute(
+                "INSERT INTO movimientos_caja (fecha, tipo, categoria, concepto, monto, metodo_pago) VALUES (%s, 'Gasto', 'Fijo Recurrente', %s, %s, 'Tarjeta/PayPal')", 
+                (datetime.now().date(), concepto_cargo, monto)
+            )
             
     # Compras a plazos
     cursor.execute("SELECT id, articulo, monto_total, meses_totales, meses_pagados FROM compras_plazos WHERE meses_pagados < meses_totales")
     for pid, articulo, total, m_totales, m_pagados in cursor.fetchall():
         concepto_base = f"Cuota Plazo: {articulo} (%%"
-        cursor.execute("SELECT COUNT(*) FROM movimientos_caja WHERE concepto LIKE %s AND TO_CHAR(fecha, 'YYYY-MM') = %s", (concepto_base, mes_actual))
+        cursor.execute(
+            "SELECT COUNT(*) FROM movimientos_caja WHERE concepto LIKE %s AND fecha::text LIKE %s", 
+            (concepto_base, f"{mes_actual}%")
+        )
         if cursor.fetchone()[0] == 0:
             concepto_cuota = f"Cuota Plazo: {articulo} ({m_pagados + 1}/{m_totales})"
             cuota = round(float(total) / m_totales, 2)
-            cursor.execute("INSERT INTO movimientos_caja (fecha, tipo, categoria, concepto, monto, metodo_pago) VALUES (%s, 'Gasto', 'Financiación', %s, %s, 'Tarjeta/PayPal')", 
-                           (datetime.now().date(), concepto_cuota, cuota))
+            cursor.execute(
+                "INSERT INTO movimientos_caja (fecha, tipo, categoria, concepto, monto, metodo_pago) VALUES (%s, 'Gasto', 'Financiación', %s, %s, 'Tarjeta/PayPal')", 
+                (datetime.now().date(), concepto_cuota, cuota)
+            )
             cursor.execute("UPDATE compras_plazos SET meses_pagados = meses_pagados + 1 WHERE id = %s", (pid,))
             
     conexion.commit()
