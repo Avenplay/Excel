@@ -65,6 +65,10 @@ def inicializar_base_datos():
         subcuenta_extra TEXT DEFAULT 'N/A'
     )""")
     
+    # Migración en caliente: crea las columnas nuevas si la tabla ya existía de antes
+    cursor.execute("ALTER TABLE movimientos_caja ADD COLUMN IF NOT EXISTS tipo TEXT DEFAULT 'Gasto'")
+    cursor.execute("ALTER TABLE movimientos_caja ADD COLUMN IF NOT EXISTS categoria TEXT DEFAULT 'Otros / Varios'")
+    
     # 2. Gastos fijos automáticos mensuales
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS gastos_recurrentes (
